@@ -1,12 +1,16 @@
 import Phaser from 'phaser';
 import {
+  computeLayout,
+  readSafeAreaInsets,
+  setCurrentLayout,
+  type LayoutMetrics,
+} from '../config/responsiveLayout';
+import {
   AttackFamily,
   BONUSES,
   CONFIG,
   EQUIPMENTS,
   EquipmentId,
-  GAME_H,
-  GAME_W,
   LANES,
   getScrollSpeed,
   getThreatTimeScale,
@@ -15,7 +19,14 @@ import {
   nextLaneIndex,
   readDevQuery,
 } from '../config/gameConfig';
-import { fitTextureScale, textureKey } from '../systems/AssetFactory';
+import { textureKey } from '../systems/AssetFactory';
+import {
+  aabbOverlap,
+  aabbSweptOverlap,
+  hitRectForRole,
+  hitRoleForKey,
+  type HitRect,
+} from '../systems/Hitbox';
 import { DEPTH, entityDrawDepth } from '../systems/RoadProjection';
 import {
   RoadOccupant,
@@ -23,6 +34,12 @@ import {
   pickEquipmentId,
   pickSafeCollectLane,
 } from '../systems/SpawnFairness';
+import {
+  applyHudEquipmentIcon,
+  applyPlayerDisplay,
+  applyWorldDisplayForKey,
+  rememberBaseDisplay,
+} from '../systems/SpriteDisplay';
 import { WorldView } from '../systems/WorldView';
 import { audio } from '../utils/AudioManager';
 import { Rng, createRng } from '../utils/Rng';
@@ -63,6 +80,8 @@ interface LaneEntity {
   /** Projectiles / UI écran : ignorer la projection Z */
   screenSpace?: boolean;
   baseScale?: number;
+  /** Clé logique (sans _ext) pour re-normaliser l’affichage */
+  logicalKey?: string;
 }
 
 interface ActiveEffect {
@@ -160,6 +179,13 @@ export class GameScene extends Phaser.Scene {
   private lastSpeedTier = -1;
   private hudTopBar!: Phaser.GameObjects.Rectangle;
   private eqPanel!: Phaser.GameObjects.Rectangle;
+  private layout!: LayoutMetrics;
+  private pauseBtnHit!: Phaser.GameObjects.Zone;
+  private leftBtnHit!: Phaser.GameObjects.Zone;
+  private rightBtnHit!: Phaser.GameObjects.Zone;
+  private pauseBg!: Phaser.GameObjects.Rectangle;
+  private hitDebugGfx: Phaser.GameObjects.Graphics | null = null;
+  private playerHitbox = { w: 42, h: 70 };
 
   private readonly onFocusCanvas = (): void => {
     this.game.canvas.focus();
@@ -218,6 +244,7 @@ export class GameScene extends Phaser.Scene {
       console.info(`[Khayil debug] seed=${q.seed}`);
     }
 
+    this.syncLayout();
     this.resetState();
     this.createWorld();
     this.createPlayer();
@@ -227,11 +254,113 @@ export class GameScene extends Phaser.Scene {
     this.createParticles();
     if (this.debugMode) this.createDebugOverlay();
     this.startCountdown();
+    this.scale.on('resize', this.onGameResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
     this.events.once(Phaser.Scenes.Events.DESTROY, this.onShutdown, this);
   }
 
+  private get W(): number {
+    return this.layout.gameWidth;
+  }
+
+  private get H(): number {
+    return this.layout.gameHeight;
+  }
+
+  private get BW(): number {
+    return this.layout.browserWidth;
+  }
+
+  private get BH(): number {
+    return this.layout.browserHeight;
+  }
+
+  private syncLayout(): void {
+    this.layout = computeLayout(this.scale.width, this.scale.height, readSafeAreaInsets());
+    setCurrentLayout(this.layout);
+  }
+
+  private readonly onGameResize = (): void => {
+    if (!this.sys?.isActive()) return;
+    this.syncLayout();
+    this.applyResponsiveLayout();
+  };
+
+  /** Recalcule HUD / moto / contrôles / décor sans recréer les GameObjects. */
+  private applyResponsiveLayout(): void {
+    if (!this.world || !this.player) return;
+    this.world.applyLayout(this.layout);
+
+    applyPlayerDisplay(this.playerSprite);
+    rememberBaseDisplay(this.playerSprite);
+    const pw = this.layout.playerDisplayWidth;
+    this.playerShadow.setSize(pw * 0.85, 12);
+    this.playerGlow.setRadius(pw * 0.55);
+    this.loveAura.setRadius(pw * 0.85);
+    this.inviRing.setRadius(pw * 0.72);
+    this.refreshPlayerHitbox();
+    this.player.y = this.layout.playerY;
+    this.targetX = this.world.proj.laneScreenX(this.lane);
+    if (!this.laneTween?.isPlaying()) this.player.x = this.targetX;
+
+    this.hudTopBar.setPosition(this.layout.centerX, 0);
+    this.hudTopBar.setSize(this.W, this.layout.hudBarHeight);
+    this.hudHearts.forEach((h, i) => {
+      h.setPosition(this.layout.hudHeartStartX + i * this.layout.hudHeartGap, this.layout.hudHeartY);
+      h.setDisplaySize(this.layout.hudHeartSize, this.layout.hudHeartSize);
+    });
+    this.hudEqText.setPosition(this.layout.centerX, this.layout.hudEqTextY);
+    this.hudDist.setPosition(this.layout.hudDistX, this.layout.hudDistY);
+    this.hudEffects.setPosition(this.layout.centerX, this.layout.hudEffectsY);
+    this.eqPanel.setPosition(this.layout.eqPanelX, this.layout.eqIconStartY + this.layout.eqPanelHeight / 2 - 8);
+    this.eqPanel.setSize(this.layout.hudIconSize + 12, this.layout.eqPanelHeight);
+    this.hudEqIcons.forEach((icon, i) => {
+      icon.setPosition(this.layout.eqPanelX, this.layout.eqIconStartY + i * this.layout.eqIconGap);
+      applyHudEquipmentIcon(icon);
+    });
+
+    this.placeButton(this.pauseBtn, this.pauseBtnHit, this.layout.pauseBtnX, this.layout.pauseBtnY, this.layout.pauseBtnSize);
+    this.placeButton(this.leftBtn, this.leftBtnHit, this.layout.touchBtnLeftX, this.layout.touchBtnLeftY, this.layout.touchBtnSize);
+    this.placeButton(this.rightBtn, this.rightBtnHit, this.layout.touchBtnRightX, this.layout.touchBtnRightY, this.layout.touchBtnSize);
+
+    this.distractionOverlay.setPosition(this.BW / 2, this.BH / 2).setSize(this.BW, this.BH);
+    this.flash.setPosition(this.BW / 2, this.BH / 2).setSize(this.BW, this.BH);
+    this.toast.setPosition(this.layout.centerX, this.layout.playerY - 120);
+    this.speedBanner.setPosition(this.layout.centerX, this.H * 0.32);
+    this.countdownText.setPosition(this.layout.centerX, this.H * 0.42);
+    if (this.pauseOverlay && this.pauseBg) {
+      this.pauseBg.setSize(this.BW, this.BH);
+      this.pauseOverlay.setPosition(this.BW / 2, this.BH / 2);
+    }
+
+    for (const e of this.entities) {
+      if (e.logicalKey && e.sprite instanceof Phaser.GameObjects.Image) {
+        e.sprite.setData('baseDisplayW', undefined);
+        e.sprite.setData('baseDisplayH', undefined);
+        this.layoutEntity(e);
+      }
+    }
+  }
+
+  private placeButton(
+    btn: Phaser.GameObjects.Container,
+    hit: Phaser.GameObjects.Zone,
+    x: number,
+    y: number,
+    size: number,
+  ): void {
+    btn.setPosition(x, y);
+    const bg = btn.list[0] as Phaser.GameObjects.Arc;
+    const txt = btn.list[1] as Phaser.GameObjects.Text;
+    if (bg?.setRadius) bg.setRadius(size / 2);
+    if (txt?.setFontSize) txt.setFontSize(Math.round(size * 0.45));
+    const hitPad = Math.max(96, size + 40);
+    hit.setPosition(x, y);
+    hit.setSize(hitPad, hitPad);
+  }
+
   private onShutdown(): void {
+    this.scale.off('resize', this.onGameResize, this);
     this.cleanupInput();
     this.time.paused = false;
     this.tweens.killAll();
@@ -305,21 +434,29 @@ export class GameScene extends Phaser.Scene {
   private createWorld(): void {
     this.world = new WorldView(this);
     this.world.create();
+    this.world.setDebug(this.debugMode);
     this.targetX = this.world.proj.laneScreenX(this.lane);
 
     this.distractionOverlay = this.add
-      .rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x00e5ff, 0)
+      .rectangle(this.BW / 2, this.BH / 2, this.BW, this.BH, 0x00e5ff, 0)
       .setDepth(DEPTH.fx);
   }
 
   private createPlayer(): void {
     const y = this.world.proj.playerY;
-    this.playerShadow = this.add.ellipse(0, 42, 48, 14, 0x000000, 0.45);
-    this.playerGlow = this.add.circle(0, 8, 38, 0xff2d95, 0.16);
-    this.loveAura = this.add.circle(0, 0, 58, 0xff80ab, 0).setStrokeStyle(3, 0xff2d95, 0);
-    this.inviRing = this.add.circle(0, 4, 48, 0x00e5ff, 0).setStrokeStyle(3, 0x00e5ff, 0);
+    const pw = this.layout.playerDisplayWidth;
+    this.playerShadow = this.add.ellipse(0, 40, pw * 0.85, 12, 0x000000, 0.45);
+    this.playerGlow = this.add.circle(0, 8, pw * 0.55, 0xff2d95, 0.16);
+    this.loveAura = this.add
+      .circle(0, 0, pw * 0.85, 0xff80ab, 0)
+      .setStrokeStyle(3, 0xff2d95, 0);
+    this.inviRing = this.add
+      .circle(0, 4, pw * 0.72, 0x00e5ff, 0)
+      .setStrokeStyle(3, 0x00e5ff, 0);
     this.playerSprite = this.add.image(0, 0, textureKey('player', this));
-    this.playerSprite.setScale(fitTextureScale(this, this.playerSprite.texture.key, 118));
+    applyPlayerDisplay(this.playerSprite);
+    rememberBaseDisplay(this.playerSprite);
+    this.refreshPlayerHitbox();
     this.player = this.add.container(this.targetX, y, [
       this.playerShadow,
       this.playerGlow,
@@ -328,7 +465,7 @@ export class GameScene extends Phaser.Scene {
       this.playerSprite,
     ]);
     this.player.setDepth(DEPTH.player);
-    this.player.setSize(CONFIG.player.hitboxW, CONFIG.player.hitboxH);
+    this.player.setSize(this.playerHitbox.w, this.playerHitbox.h);
 
     this.trail = this.add.particles(0, 0, 'particle-pink', {
       speed: { min: 10, max: 40 },
@@ -337,7 +474,7 @@ export class GameScene extends Phaser.Scene {
       lifespan: 320,
       frequency: 40,
       follow: this.player,
-      followOffset: { x: 0, y: 36 },
+      followOffset: { x: 0, y: this.playerSprite.displayHeight * 0.35 },
       blendMode: 'ADD',
     });
     this.trail.setDepth(DEPTH.player - 1);
@@ -356,22 +493,26 @@ export class GameScene extends Phaser.Scene {
 
   private createHud(): void {
     this.hudTopBar = this.add
-      .rectangle(GAME_W / 2, 0, GAME_W, 64, 0x070412, 0.55)
+      .rectangle(this.layout.centerX, 0, this.W, this.layout.hudBarHeight, 0x070412, 0.55)
       .setOrigin(0.5, 0)
       .setDepth(DEPTH.hud - 1)
       .setScrollFactor(0);
 
     for (let i = 0; i < CONFIG.player.maxLives; i++) {
       const h = this.add
-        .image(22 + i * 32, 26, 'heart')
+        .image(
+          this.layout.hudHeartStartX + i * this.layout.hudHeartGap,
+          this.layout.hudHeartY,
+          'heart',
+        )
         .setScrollFactor(0)
         .setDepth(DEPTH.hud)
-        .setDisplaySize(26, 26);
+        .setDisplaySize(this.layout.hudHeartSize, this.layout.hudHeartSize);
       this.hudHearts.push(h);
     }
 
     this.hudEqText = this.add
-      .text(GAME_W / 2, 18, 'Équipements : 0/7', {
+      .text(this.layout.centerX, this.layout.hudEqTextY, 'Équipements : 0/7', {
         fontFamily: 'Outfit, sans-serif',
         fontSize: '13px',
         color: '#fff',
@@ -381,7 +522,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(DEPTH.hud);
 
     this.hudDist = this.add
-      .text(GAME_W - 70, 26, '0 M', {
+      .text(this.layout.hudDistX, this.layout.hudDistY, '0 M', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '13px',
         color: '#fff',
@@ -391,7 +532,14 @@ export class GameScene extends Phaser.Scene {
 
     // Colonne équipements hors chaussée (bas-côté gauche)
     this.eqPanel = this.add
-      .rectangle(18, 200, 36, 7 * 38 + 16, 0x0a0618, 0.62)
+      .rectangle(
+        this.layout.eqPanelX,
+        this.layout.eqIconStartY + this.layout.eqPanelHeight / 2 - 8,
+        this.layout.hudIconSize + 12,
+        this.layout.eqPanelHeight,
+        0x0a0618,
+        0.62,
+      )
       .setStrokeStyle(1, 0xffd54f, 0.35)
       .setDepth(DEPTH.hud - 1)
       .setScrollFactor(0);
@@ -399,18 +547,18 @@ export class GameScene extends Phaser.Scene {
     EQUIPMENTS.forEach((eq, i) => {
       const iconKey = textureKey(`eq-icon-${eq.id}`, this);
       const icon = this.add
-        .image(18, 78 + i * 38, iconKey)
+        .image(this.layout.eqPanelX, this.layout.eqIconStartY + i * this.layout.eqIconGap, iconKey)
         .setOrigin(0.5)
         .setAlpha(0.38)
         .setDepth(DEPTH.hud)
         .setScrollFactor(0)
-        .setDisplaySize(32, 32)
         .setTint(0x8899aa);
+      applyHudEquipmentIcon(icon);
       this.hudEqIcons.push(icon);
     });
 
     this.hudEffects = this.add
-      .text(GAME_W / 2, 42, '', {
+      .text(this.layout.centerX, this.layout.hudEffectsY, '', {
         fontFamily: 'Outfit, sans-serif',
         fontSize: '11px',
         color: '#00e5ff',
@@ -422,7 +570,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(DEPTH.hud);
 
     this.toast = this.add
-      .text(GAME_W / 2, GAME_H * 0.4, '', {
+      .text(this.layout.centerX, this.layout.playerY - 120, '', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '16px',
         color: '#ffd54f',
@@ -435,7 +583,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(DEPTH.hud + 10);
 
     this.speedBanner = this.add
-      .text(GAME_W / 2, GAME_H * 0.32, '', {
+      .text(this.layout.centerX, this.H * 0.32, '', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '15px',
         color: '#ff2d95',
@@ -447,11 +595,11 @@ export class GameScene extends Phaser.Scene {
       .setDepth(DEPTH.hud + 10);
 
     this.flash = this.add
-      .rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, 0)
+      .rectangle(this.BW / 2, this.BH / 2, this.BW, this.BH, 0xffffff, 0)
       .setDepth(DEPTH.fx + 5);
 
     this.countdownText = this.add
-      .text(GAME_W / 2, GAME_H * 0.42, '', {
+      .text(this.layout.centerX, this.H * 0.42, '', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '96px',
         color: '#ff2d95',
@@ -462,11 +610,34 @@ export class GameScene extends Phaser.Scene {
       .setDepth(DEPTH.hud + 20)
       .setAlpha(0);
 
-    this.pauseBtn = this.makeButton(GAME_W - 28, 26, 'Ⅱ', () => this.togglePause(), 34);
-    this.leftBtn = this.makeButton(48, GAME_H - 56, '◀', () => this.changeLane(-1), 56, 0.65);
-    this.rightBtn = this.makeButton(GAME_W - 48, GAME_H - 56, '▶', () => this.changeLane(1), 56, 0.65);
+    this.pauseBtn = this.makeButton(
+      this.layout.pauseBtnX,
+      this.layout.pauseBtnY,
+      'Ⅱ',
+      () => this.togglePause(),
+      this.layout.pauseBtnSize,
+      0.55,
+      'pause',
+    );
+    this.leftBtn = this.makeButton(
+      this.layout.touchBtnLeftX,
+      this.layout.touchBtnLeftY,
+      '◀',
+      () => this.changeLane(-1),
+      this.layout.touchBtnSize,
+      0.65,
+      'left',
+    );
+    this.rightBtn = this.makeButton(
+      this.layout.touchBtnRightX,
+      this.layout.touchBtnRightY,
+      '▶',
+      () => this.changeLane(1),
+      this.layout.touchBtnSize,
+      0.65,
+      'right',
+    );
 
-    // Les contrôles HUD doivent recevoir les clics même s’ils se chevauchent avec le décor
     this.input.setTopOnly(false);
   }
 
@@ -477,6 +648,7 @@ export class GameScene extends Phaser.Scene {
     cb: () => void,
     size = 40,
     alpha = 0.55,
+    slot: 'pause' | 'left' | 'right' = 'pause',
   ): Phaser.GameObjects.Container {
     const hitPad = Math.max(96, size + 40);
     const bg = this.add.circle(0, 0, size / 2, 0x1a0a30, alpha).setStrokeStyle(2, 0xff2d95, 0.9);
@@ -485,7 +657,6 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5);
     const c = this.add.container(x, y, [bg, txt]).setDepth(DEPTH.hud + 40).setScrollFactor(0);
 
-    // Zone dédiée (hors container) — hitbox fiable au touch / clic
     const hit = this.add.zone(x, y, hitPad, hitPad).setScrollFactor(0).setDepth(DEPTH.hud + 50);
     hit.setInteractive({ useHandCursor: true });
     if (hit.input) {
@@ -493,6 +664,9 @@ export class GameScene extends Phaser.Scene {
     }
     (hit as Phaser.GameObjects.Zone & { isHudControl?: boolean }).isHudControl = true;
     this.hudHits.push(hit as unknown as Phaser.GameObjects.Rectangle);
+    if (slot === 'pause') this.pauseBtnHit = hit;
+    else if (slot === 'left') this.leftBtnHit = hit;
+    else this.rightBtnHit = hit;
 
     const press = () => {
       bg.setFillStyle(0x9b59ff, 0.95);
@@ -521,7 +695,7 @@ export class GameScene extends Phaser.Scene {
 
   private createPauseOverlay(): void {
     this.pauseMenuHits = [];
-    const bg = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x070412, 0.82);
+    this.pauseBg = this.add.rectangle(0, 0, this.BW, this.BH, 0x070412, 0.82);
     const title = this.add
       .text(0, -160, 'PAUSE', {
         fontFamily: 'Orbitron',
@@ -538,7 +712,13 @@ export class GameScene extends Phaser.Scene {
       this.scene.start('Menu');
     });
 
-    this.pauseOverlay = this.add.container(GAME_W / 2, GAME_H / 2, [bg, title, resume, restart, home]);
+    this.pauseOverlay = this.add.container(this.BW / 2, this.BH / 2, [
+      this.pauseBg,
+      title,
+      resume,
+      restart,
+      home,
+    ]);
     this.pauseOverlay.setDepth(200).setVisible(false);
     this.setPauseMenuInteractive(false);
   }
@@ -759,13 +939,22 @@ export class GameScene extends Phaser.Scene {
   private layoutEntity(e: LaneEntity): void {
     if (e.screenSpace) return;
     const sp = e.sprite as Phaser.GameObjects.Image;
-    const z = Math.max(0, e.worldZ);
-    const p = this.world.proj.project(e.lane, z);
+    // Sortie visuelle après le plan joueur (ne fige plus à z=0)
+    const p =
+      e.worldZ < 0
+        ? this.world.proj.projectPast(e.lane, e.worldZ)
+        : this.world.proj.project(e.lane, e.worldZ);
     const base = e.baseScale ?? 1;
-    const fit = fitTextureScale(this, sp.texture.key);
+    const logical = e.logicalKey ?? sp.texture.key.replace(/_ext$/, '');
+    if (sp.getData('baseDisplayW') == null) {
+      applyWorldDisplayForKey(sp, logical);
+      rememberBaseDisplay(sp);
+    }
+    const bw = sp.getData('baseDisplayW') as number;
+    const bh = sp.getData('baseDisplayH') as number;
     sp.setPosition(p.x, p.y);
-    sp.setScale(p.scale * base * fit);
-    sp.setDepth(entityDrawDepth(e.worldZ, this.world.proj.maxZ));
+    sp.setDisplaySize(bw * p.scale * base, bh * p.scale * base);
+    sp.setDepth(entityDrawDepth(Math.max(0, e.worldZ), this.world.proj.maxZ));
     if (e.warning) {
       e.warning.setPosition(p.x, p.y);
       e.warning.setScale(p.scale);
@@ -920,10 +1109,8 @@ export class GameScene extends Phaser.Scene {
     let key = 'car';
     let entKind: EntityKind = 'obstacle';
     let baseScale = 1;
-    if (kind === 'truck') {
-      key = 'truck';
-      baseScale = 1.15;
-    } else if (kind === 'barrier') key = 'barrier';
+    if (kind === 'truck') key = 'truck';
+    else if (kind === 'barrier') key = 'barrier';
     else if (kind === 'cone') key = 'cone';
     else if (kind === 'hole') key = 'hole';
     else if (kind === 'barrel') {
@@ -932,7 +1119,17 @@ export class GameScene extends Phaser.Scene {
     }
 
     const sprite = this.add.image(0, 0, textureKey(key, this));
-    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: entKind, hit: false, baseScale };
+    applyWorldDisplayForKey(sprite, key);
+    rememberBaseDisplay(sprite);
+    const ent: LaneEntity = {
+      sprite,
+      lane,
+      worldZ: z,
+      kind: entKind,
+      hit: false,
+      baseScale,
+      logicalKey: key,
+    };
     if (entKind === 'barrel') {
       ent.fuse = CONFIG.barrel.fuseDuration;
       ent.fuseMax = CONFIG.barrel.fuseDuration;
@@ -971,7 +1168,9 @@ export class GameScene extends Phaser.Scene {
     if (this.laneBusyNear(lane, z, 110)) return;
 
     const sprite = this.add.image(0, 0, textureKey(`eq-${id}`, this));
-    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'equipment', equipmentId: id, hit: false };
+    applyWorldDisplayForKey(sprite, `eq-${id}`);
+    rememberBaseDisplay(sprite);
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'equipment', equipmentId: id, hit: false, logicalKey: `eq-${id}` };
     this.layoutEntity(ent);
     this.entities.push(ent);
   }
@@ -994,7 +1193,9 @@ export class GameScene extends Phaser.Scene {
 
     if (this.rng.chance(CONFIG.spawn.loveChance) && !this.hasEffect('love')) {
       const sprite = this.add.image(0, 0, textureKey('love', this));
-      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'love', hit: false };
+      applyWorldDisplayForKey(sprite, 'love');
+      rememberBaseDisplay(sprite);
+      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'love', hit: false, logicalKey: 'love' };
       this.layoutEntity(ent);
       this.entities.push(ent);
       return;
@@ -1007,8 +1208,11 @@ export class GameScene extends Phaser.Scene {
     if (bonus.id === 'boost' && this.hasEffect('slowmo')) {
       bonus = this.rng.pick(BONUSES.filter((b) => b.id !== 'boost'));
     }
-    const sprite = this.add.image(0, 0, textureKey(`bonus-${bonus.id}`, this));
-    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'bonus', bonusId: bonus.id, hit: false };
+    const logicalBonus = `bonus-${bonus.id}`;
+    const sprite = this.add.image(0, 0, textureKey(logicalBonus, this));
+    applyWorldDisplayForKey(sprite, logicalBonus);
+    rememberBaseDisplay(sprite);
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'bonus', bonusId: bonus.id, hit: false, logicalKey: logicalBonus };
     this.layoutEntity(ent);
     this.entities.push(ent);
   }
@@ -1078,13 +1282,23 @@ export class GameScene extends Phaser.Scene {
       .setDepth(DEPTH.fx + 2);
     markers.push(t);
     if (side === 'left') {
-      markers.push(this.add.triangle(28, y, 0, 10, 18, 0, 18, 20, 0xea80fc, 0.9).setDepth(DEPTH.fx + 2));
+      markers.push(
+        this.add
+          .triangle(this.layout.gameOffsetX + 28, y, 0, 10, 18, 0, 18, 20, 0xea80fc, 0.9)
+          .setDepth(DEPTH.fx + 2),
+      );
     } else if (side === 'right') {
       markers.push(
-        this.add.triangle(GAME_W - 28, y, 18, 10, 0, 0, 0, 20, 0xea80fc, 0.9).setDepth(DEPTH.fx + 2),
+        this.add
+          .triangle(this.layout.gameOffsetX + this.W - 28, y, 18, 10, 0, 0, 0, 20, 0xea80fc, 0.9)
+          .setDepth(DEPTH.fx + 2),
       );
     } else if (side === 'behind') {
-      markers.push(this.add.triangle(x, GAME_H - 100, 10, 0, 0, 16, 20, 16, 0xff5252, 0.95).setDepth(DEPTH.fx + 2));
+      markers.push(
+        this.add
+          .triangle(x, this.BH - 100, 10, 0, 0, 16, 20, 16, 0xff5252, 0.95)
+          .setDepth(DEPTH.fx + 2),
+      );
     }
     this.tweens.add({
       targets: markers,
@@ -1109,7 +1323,9 @@ export class GameScene extends Phaser.Scene {
     );
     const lane = lanes?.[0] ?? this.rng.pick(free);
     const sprite = this.add.image(0, 0, textureKey('depression', this)).setAlpha(0.92);
-    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'depression', hit: false, baseScale: 1.1 };
+    applyWorldDisplayForKey(sprite, 'depression');
+    rememberBaseDisplay(sprite);
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'depression', hit: false, logicalKey: 'depression' };
     this.layoutEntity(ent);
     const p = this.world.proj.project(lane, Math.min(z, 160));
     this.showDirectionalWarn(p.x, p.y, 'DÉPRESSION', '#ce93d8');
@@ -1118,11 +1334,14 @@ export class GameScene extends Phaser.Scene {
 
   private spawnCalomnie(): void {
     const fromLeft = this.rng.chance(0.5);
-    const y = GAME_H * this.rng.float(0.38, 0.52);
-    const sx = fromLeft ? -30 : GAME_W + 30;
+    const y = this.H * this.rng.float(0.38, 0.52);
+    const left = this.layout.gameOffsetX;
+    const right = this.layout.gameOffsetX + this.W;
+    const sx = fromLeft ? left - 30 : right + 30;
     const attacker = this.add.image(sx, y, textureKey('calomnie', this)).setDepth(DEPTH.fx);
+    applyWorldDisplayForKey(attacker, 'calomnie');
     this.showDirectionalWarn(
-      fromLeft ? 56 : GAME_W - 56,
+      fromLeft ? left + 56 : right - 56,
       y,
       'CALOMNIE',
       '#ea80fc',
@@ -1131,7 +1350,7 @@ export class GameScene extends Phaser.Scene {
     const scaleNow = () => getThreatTimeScale(this.hasEffect('slowmo'));
     this.tweens.add({
       targets: attacker,
-      x: fromLeft ? 36 : GAME_W - 36,
+      x: fromLeft ? left + 36 : right - 36,
       duration: 500 / scaleNow(),
       onComplete: () => {
         for (let i = 0; i < 3; i++) {
@@ -1140,6 +1359,7 @@ export class GameScene extends Phaser.Scene {
             const proj = this.add
               .image(attacker.x, attacker.y, textureKey('projectile', this))
               .setDepth(DEPTH.fx);
+            applyWorldDisplayForKey(proj, 'projectile');
             const targetLane = this.rng.int(0, 2);
             const vx = (fromLeft ? 180 : -180) * scaleNow();
             this.entities.push({
@@ -1150,6 +1370,7 @@ export class GameScene extends Phaser.Scene {
               hit: false,
               vx,
               screenSpace: true,
+              logicalKey: 'projectile',
             });
             this.tweens.add({
               targets: proj,
@@ -1162,7 +1383,7 @@ export class GameScene extends Phaser.Scene {
         this.time.delayedCall(1400 / scaleNow(), () => {
           this.tweens.add({
             targets: attacker,
-            x: fromLeft ? -40 : GAME_W + 40,
+            x: fromLeft ? left - 40 : right + 40,
             duration: 400,
             onComplete: () => attacker.destroy(),
           });
@@ -1186,6 +1407,8 @@ export class GameScene extends Phaser.Scene {
         this.rng,
       )?.[0] ?? this.rng.pick(free);
     const sprite = this.add.image(0, 0, textureKey('colere', this));
+    applyWorldDisplayForKey(sprite, 'colere');
+    rememberBaseDisplay(sprite);
     const ent: LaneEntity = {
       sprite,
       lane: dangerLane,
@@ -1194,6 +1417,7 @@ export class GameScene extends Phaser.Scene {
       hit: false,
       fuse: 2.2,
       fuseMax: 2.2,
+      logicalKey: 'colere',
     };
     this.layoutEntity(ent);
     const p = this.world.proj.project(dangerLane, Math.min(z, 150));
@@ -1216,7 +1440,9 @@ export class GameScene extends Phaser.Scene {
       warn.destroy();
       if (!this.scene.isActive('Game') || !this.playing) return;
       const sprite = this.add.image(0, 0, textureKey('peur', this));
-      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'peur', hit: false, life: 2.5 };
+      applyWorldDisplayForKey(sprite, 'peur');
+      rememberBaseDisplay(sprite);
+      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'peur', hit: false, life: 2.5, logicalKey: 'peur' };
       this.layoutEntity(ent);
       this.entities.push(ent);
     });
@@ -1237,7 +1463,9 @@ export class GameScene extends Phaser.Scene {
     });
     if (lane === null) return;
     const sprite = this.add.image(0, 0, textureKey('doute', this)).setAlpha(0.85);
-    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'doute', hit: false, isDoubt: true };
+    applyWorldDisplayForKey(sprite, 'doute');
+    rememberBaseDisplay(sprite);
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'doute', hit: false, isDoubt: true, logicalKey: 'doute' };
     this.layoutEntity(ent);
     this.entities.push(ent);
   }
@@ -1255,15 +1483,15 @@ export class GameScene extends Phaser.Scene {
     this.closeWarnRect = this.add
       .rectangle(
         this.world.proj.laneScreenX(lane),
-        (this.world.proj.horizonY + GAME_H) / 2,
+        (this.world.proj.horizonY + this.H) / 2,
         laneHalf,
-        GAME_H * 0.55,
+        this.H * 0.55,
         0xff1744,
         0.15,
       )
       .setDepth(DEPTH.entityBase + 5)
       .setStrokeStyle(2, 0xff1744, 0.8);
-    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), GAME_H * 0.45, 'REJET', '#ff1744');
+    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), this.H * 0.45, 'REJET', '#ff1744');
     this.tweens.add({ targets: this.closeWarnRect, alpha: 0.05, duration: 300, yoyo: true, repeat: 3 });
 
     this.time.delayedCall(CONFIG.laneClosure.warningDuration * 1000, () => {
@@ -1272,8 +1500,13 @@ export class GameScene extends Phaser.Scene {
       this.closeWarnRect = null;
       this.closeBarrier?.destroy();
       this.closeBarrier = this.add.image(0, 0, textureKey('reject', this)).setDepth(DEPTH.entityBase + 20);
+      applyWorldDisplayForKey(this.closeBarrier, 'reject');
+      rememberBaseDisplay(this.closeBarrier);
       const p = this.world.proj.project(lane, 70);
-      this.closeBarrier.setPosition(p.x, p.y).setScale(p.scale * 1.2);
+      const bw = this.closeBarrier.getData('baseDisplayW') as number;
+      const bh = this.closeBarrier.getData('baseDisplayH') as number;
+      this.closeBarrier.setPosition(p.x, p.y);
+      this.closeBarrier.setDisplaySize(bw * p.scale * 1.15, bh * p.scale * 1.15);
       if (this.lane === lane) this.changeLane(lane === 0 ? 1 : -1);
     });
   }
@@ -1284,6 +1517,8 @@ export class GameScene extends Phaser.Scene {
     const away = free.filter((l) => l !== this.lane);
     const lane = this.rng.pick(away.length ? away : free);
     const sprite = this.add.image(0, 0, textureKey('car', this)).setTint(0xff5252);
+    applyWorldDisplayForKey(sprite, 'car');
+    rememberBaseDisplay(sprite);
     const ent: LaneEntity = {
       sprite,
       lane,
@@ -1292,11 +1527,11 @@ export class GameScene extends Phaser.Scene {
       hit: false,
       fromBehind: true,
       life: 3.5,
-      baseScale: 1.05,
+      logicalKey: 'car',
     };
     this.layoutEntity(ent);
     this.entities.push(ent);
-    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), GAME_H - 120, 'ARRIÈRE', '#ff5252', 'behind');
+    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), this.H - 120, 'ARRIÈRE', '#ff5252', 'behind');
   }
 
   private triggerDistraction(): void {
@@ -1321,7 +1556,10 @@ export class GameScene extends Phaser.Scene {
     this.closeWarningRemaining = Math.max(0, this.closeWarningRemaining - dt);
     if (this.closeBarrier && this.closedLane !== null) {
       const p = this.world.proj.project(this.closedLane, 70);
-      this.closeBarrier.setPosition(p.x, p.y).setScale(p.scale * 1.2);
+      const bw = (this.closeBarrier.getData('baseDisplayW') as number) || this.closeBarrier.displayWidth;
+      const bh = (this.closeBarrier.getData('baseDisplayH') as number) || this.closeBarrier.displayHeight;
+      this.closeBarrier.setPosition(p.x, p.y);
+      this.closeBarrier.setDisplaySize(bw * p.scale * 1.15, bh * p.scale * 1.15);
     }
     if (this.closeRemaining <= 0) {
       this.closedLane = null;
@@ -1333,8 +1571,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tickEntities(dt: number): void {
-    const px = this.player.x;
-    const py = this.player.y;
+    const playerHit = this.getPlayerHitRect();
 
     for (let i = this.entities.length - 1; i >= 0; i--) {
       const e = this.entities[i];
@@ -1396,30 +1633,144 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
 
-      // hors champ logique
-      if (!e.screenSpace && (e.worldZ < -40 || e.worldZ > this.world.proj.maxZ + 40)) {
-        if (e.kind === 'obstacle' || e.kind === 'depression' || e.kind === 'barrel') this.obstaclesAvoided++;
-        this.destroyEntity(i);
-        continue;
+      // hors champ : z passé + bounds écran (ou z très négatif)
+      if (!e.screenSpace) {
+        if (e.worldZ < 0) {
+          const b = sp.getBounds();
+          const off =
+            b.bottom < -56 ||
+            b.top > this.BH + 56 ||
+            b.right < -56 ||
+            b.left > this.BW + 56;
+          if (off || e.worldZ < -160) {
+            if (e.kind === 'obstacle' || e.kind === 'depression' || e.kind === 'barrel') {
+              this.obstaclesAvoided++;
+            }
+            this.destroyEntity(i);
+            continue;
+          }
+        } else if (e.worldZ > this.world.proj.maxZ + 40) {
+          this.destroyEntity(i);
+          continue;
+        }
       }
-      if (e.screenSpace && (sp.x < -80 || sp.x > GAME_W + 80 || sp.y > GAME_H + 80)) {
+      if (e.screenSpace && (sp.x < -80 || sp.x > this.BW + 80 || sp.y > this.BH + 80)) {
         this.destroyEntity(i);
         continue;
       }
 
       if (e.hit) continue;
 
-      // Collisions logiques (voie + profondeur) pour le monde ; écran pour projectiles
-      let hit = false;
-      if (e.screenSpace || e.kind === 'projectile') {
-        const hw = CONFIG.player.hitboxW * 0.4;
-        const hh = CONFIG.player.hitboxH * 0.35;
-        hit = Math.abs(sp.x - px) < hw + sp.displayWidth * 0.25 && Math.abs(sp.y - py) < hh + sp.displayHeight * 0.25;
-      } else {
-        hit = this.world.proj.overlapsPlayer(Math.round(e.lane), e.worldZ, this.lane, { zHit: 30 });
-      }
+      // Plus de collision une fois passé le plan joueur (évite hitboxes fantômes)
+      if (!e.screenSpace && e.worldZ < 0) continue;
 
+      // Collision = AABB écran alignée sur le display (même frame que le contact visuel)
+      const hit = this.checkEntityHit(e, sp, playerHit);
       if (hit) this.handlePickupOrHit(e, i);
+    }
+
+    this.drawHitboxDebug(playerHit);
+  }
+
+  /** Hitbox moto dérivée du displaySize (marges transparentes compensées). */
+  private refreshPlayerHitbox(): void {
+    const dw = this.playerSprite.displayWidth;
+    const dh = this.playerSprite.displayHeight;
+    const rect = hitRectForRole(0, 0, dw, dh, 'player');
+    this.playerHitbox = { w: rect.w, h: rect.h };
+    this.player?.setSize(rect.w, rect.h);
+  }
+
+  private getPlayerHitRect(): HitRect {
+    return hitRectForRole(
+      this.player.x,
+      this.player.y,
+      this.playerSprite.displayWidth,
+      this.playerSprite.displayHeight,
+      'player',
+    );
+  }
+
+  private getEntityHitRect(e: LaneEntity, sp: Phaser.GameObjects.Image): HitRect {
+    const key = e.logicalKey ?? sp.texture.key;
+    const role = hitRoleForKey(key);
+    return hitRectForRole(sp.x, sp.y, sp.displayWidth, sp.displayHeight, role);
+  }
+
+  /**
+   * Contact visuel → pickup dans la même frame.
+   * Swept AABB si l’entité a bougé depuis la frame précédente (anti-tunneling).
+   */
+  private checkEntityHit(
+    e: LaneEntity,
+    sp: Phaser.GameObjects.Image,
+    playerHit: HitRect,
+  ): boolean {
+    const to = this.getEntityHitRect(e, sp);
+
+    if (e.screenSpace || e.kind === 'projectile') {
+      const prevX = sp.getData('prevHitX') as number | undefined;
+      const prevY = sp.getData('prevHitY') as number | undefined;
+      let hit: boolean;
+      if (prevX != null && prevY != null) {
+        const from = hitRectForRole(prevX, prevY, sp.displayWidth, sp.displayHeight, 'projectile');
+        hit = aabbSweptOverlap(playerHit, from, to);
+      } else {
+        hit = aabbOverlap(playerHit, to);
+      }
+      sp.setData('prevHitX', sp.x);
+      sp.setData('prevHitY', sp.y);
+      return hit;
+    }
+
+    const laneOk =
+      Math.round(e.lane) === this.lane ||
+      (this.laneTween?.isPlaying() === true && Math.abs(Math.round(e.lane) - this.lane) <= 1);
+    if (!laneOk) {
+      sp.setData('prevHitX', sp.x);
+      sp.setData('prevHitY', sp.y);
+      return false;
+    }
+
+    if (e.worldZ > this.world.proj.maxZ * 0.55) {
+      sp.setData('prevHitX', sp.x);
+      sp.setData('prevHitY', sp.y);
+      return false;
+    }
+
+    const role = hitRoleForKey(e.logicalKey ?? sp.texture.key);
+    const prevX = sp.getData('prevHitX') as number | undefined;
+    const prevY = sp.getData('prevHitY') as number | undefined;
+    let hit: boolean;
+    if (prevX != null && prevY != null) {
+      const from = hitRectForRole(prevX, prevY, sp.displayWidth, sp.displayHeight, role);
+      hit = aabbSweptOverlap(playerHit, from, to);
+    } else {
+      hit = aabbOverlap(playerHit, to);
+    }
+    sp.setData('prevHitX', sp.x);
+    sp.setData('prevHitY', sp.y);
+    return hit;
+  }
+
+  private drawHitboxDebug(playerHit: HitRect): void {
+    if (!this.debugMode) return;
+    if (!this.hitDebugGfx) {
+      this.hitDebugGfx = this.add.graphics().setDepth(DEPTH.hud + 90);
+    }
+    const g = this.hitDebugGfx;
+    g.clear();
+    g.lineStyle(1, 0x00ff88, 0.9);
+    g.strokeRect(playerHit.left, playerHit.top, playerHit.w, playerHit.h);
+    for (const e of this.entities) {
+      if (e.hit || e.screenSpace) continue;
+      const sp = e.sprite as Phaser.GameObjects.Image;
+      if (!sp.active) continue;
+      const r = this.getEntityHitRect(e, sp);
+      const collectible =
+        e.kind === 'equipment' || e.kind === 'bonus' || e.kind === 'love';
+      g.lineStyle(1, collectible ? 0xffd54f : 0xff1744, 0.85);
+      g.strokeRect(r.left, r.top, r.w, r.h);
     }
   }
 
@@ -1470,8 +1821,19 @@ export class GameScene extends Phaser.Scene {
     if (isNew) {
       this.collected.add(id);
       const idx = EQUIPMENTS.findIndex((e) => e.id === id);
-      this.hudEqIcons[idx].setAlpha(1).clearTint().setScale(1.15);
-      this.tweens.add({ targets: this.hudEqIcons[idx], scale: 1, duration: 220 });
+      this.hudEqIcons[idx].setAlpha(1).clearTint();
+      applyHudEquipmentIcon(this.hudEqIcons[idx]);
+      const icon = this.hudEqIcons[idx];
+      const sx = icon.scaleX;
+      const sy = icon.scaleY;
+      this.tweens.add({
+        targets: icon,
+        scaleX: sx * 1.18,
+        scaleY: sy * 1.18,
+        duration: 220,
+        yoyo: true,
+        onComplete: () => applyHudEquipmentIcon(icon),
+      });
       this.hudEqText.setText(`Équipements : ${this.collected.size}/7`);
     }
     audio.collect();
@@ -1575,7 +1937,7 @@ export class GameScene extends Phaser.Scene {
 
   private createDebugOverlay(): void {
     this.debugText = this.add
-      .text(8, GAME_H - 72, '', {
+      .text(this.layout.gameOffsetX + 8, this.BH - 88, '', {
         fontFamily: 'monospace',
         fontSize: '10px',
         color: '#69f0ae',
@@ -1591,10 +1953,10 @@ export class GameScene extends Phaser.Scene {
     const tier = getTier(this.collected.size);
     this.debugText.setText(
       [
-        `DBG seed=${this.runSeed ?? 'rand'} t=${this.simTime.toFixed(1)}s`,
+        `DBG seed=${this.runSeed ?? 'rand'} t=${this.simTime.toFixed(1)}s hitboxes ON`,
         `tier=${tier} spd=${this.scrollSpeed.toFixed(0)} eq=${this.collected.size}/7`,
-        `lane=${this.lane} closed=${this.activeClosedLane() ?? '-'} breath=${this.breathRemaining.toFixed(1)}`,
-        `enti=${this.entities.length} invi=${this.invincibleRemaining.toFixed(1)}`,
+        `lane=${this.lane} hit=${this.playerHitbox.w.toFixed(0)}x${this.playerHitbox.h.toFixed(0)}`,
+        `game=${this.W}x${this.H} offX=${this.layout.gameOffsetX} enti=${this.entities.length}`,
       ].join('\n'),
     );
   }
@@ -1640,6 +2002,8 @@ export class GameScene extends Phaser.Scene {
     this.flashScreen(0xff6e40, 0.16);
     const lane = this.nearestLane(x);
     const fire = this.add.image(0, 0, textureKey('colere', this));
+    applyWorldDisplayForKey(fire, 'colere');
+    rememberBaseDisplay(fire);
     const ent: LaneEntity = {
       sprite: fire,
       lane,
@@ -1647,7 +2011,8 @@ export class GameScene extends Phaser.Scene {
       kind: 'firezone',
       hit: false,
       life: 1.5,
-      baseScale: 1.3,
+      baseScale: 1.25,
+      logicalKey: 'colere',
     };
     this.layoutEntity(ent);
     this.entities.push(ent);
@@ -1724,20 +2089,23 @@ export class GameScene extends Phaser.Scene {
   private refreshHearts(): void {
     this.hudHearts.forEach((h, i) => {
       h.setTexture(i < this.lives ? 'heart' : 'heart-empty');
+      h.setDisplaySize(this.layout.hudHeartSize, this.layout.hudHeartSize);
     });
   }
 
   private showToast(msg: string, color = '#ffd54f'): void {
+    const baseY = this.layout.playerY - 120;
     this.toast.setText(msg).setColor(color).setAlpha(1).setScale(1.1);
+    this.toast.setPosition(this.layout.centerX, baseY);
     this.tweens.killTweensOf(this.toast);
     this.tweens.add({
       targets: this.toast,
       alpha: 0,
-      y: GAME_H * 0.38 - 20,
+      y: baseY - 20,
       duration: 1400,
       delay: 400,
       onComplete: () => {
-        this.toast.y = GAME_H * 0.38;
+        this.toast.y = baseY;
       },
     });
   }
@@ -1803,8 +2171,7 @@ export class GameScene extends Phaser.Scene {
   /** Active / coupe les hitboxes ◀ ▶ (pas le bouton pause) */
   private setLaneButtonsEnabled(on: boolean): void {
     for (const hit of this.hudHits) {
-      // Le bouton pause est en haut à droite — on ne le désactive pas
-      if (hit.y < 80) continue;
+      if (hit === (this.pauseBtnHit as unknown as Phaser.GameObjects.Rectangle)) continue;
       if (on) {
         if (!hit.input) {
           hit.setInteractive({

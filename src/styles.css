@@ -7,8 +7,6 @@
   --neon-cyan: #00e5ff;
   --neon-gold: #ffd54f;
   --text: #f5f0ff;
-  --game-w: 390;
-  --game-h: 844;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -28,6 +26,7 @@ html,
 body {
   width: 100%;
   height: 100%;
+  height: 100dvh;
   overflow: hidden;
   background:
     radial-gradient(ellipse at 50% 0%, #2a1050 0%, transparent 55%),
@@ -40,33 +39,24 @@ body {
 #app {
   width: 100%;
   height: 100%;
+  height: 100dvh;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  align-items: stretch;
+  justify-content: stretch;
+  /* Safe areas gérées dans Phaser via #safe-area-probe */
+  padding: 0;
 }
 
 /*
-  Cadre 390×844 : on fixe la largeur max possible dans la hauteur dispo,
-  puis aspect-ratio calcule la hauteur — sans forcer les deux axes à 100%.
+  Plein viewport — Phaser Scale.RESIZE adapte le canvas.
+  Plus de cadre 390×844 compressé sur mobile.
 */
 #game-frame {
   position: relative;
-  aspect-ratio: 390 / 844;
-  width: min(
-    100%,
-    480px,
-    calc((100vh - var(--safe-top) - var(--safe-bottom)) * 390 / 844)
-  );
-  height: auto;
-  max-height: calc(100vh - var(--safe-top) - var(--safe-bottom));
-  box-shadow:
-    0 0 0 1px rgba(255, 45, 149, 0.25),
-    0 0 60px rgba(155, 89, 255, 0.35),
-    0 20px 80px rgba(0, 0, 0, 0.65);
-  border-radius: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  background: var(--bg-frame);
+  background: transparent;
 }
 
 #game-container {
@@ -76,14 +66,23 @@ body {
   height: 100%;
 }
 
-/* Phaser Scale.FIT gère le dimensionnement : ne pas forcer width+height */
 #game-container canvas {
   display: block;
-  margin: 0 auto;
+  width: 100% !important;
+  height: 100% !important;
 }
 
-@media (min-width: 900px) {
-  #game-frame {
-    border-radius: 18px;
-  }
+/* Probe invisible pour lire env(safe-area-inset-*) en pixels */
+#safe-area-probe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  visibility: hidden;
+  padding-top: var(--safe-top);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
 }

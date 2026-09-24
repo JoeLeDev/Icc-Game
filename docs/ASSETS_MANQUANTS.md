@@ -20,27 +20,40 @@ Des PNG dans `public/assets/` remplacent automatiquement les textures procédura
 | `enemy_depression/calomnie/peur/doute.png` | — | ✅ |
 | `fx_projectile.png` / `fx_fire.png` | — | ✅ |
 | `prop_lamp.png` / `prop_palm.png` | — | ✅ |
-| `skyline.png` | 780×240 | ✅ |
+| `skyline.png` | 780×240 | ✅ horizon lointain |
+| `Building.png` | 1310×1200 | ✅ backdrop ville global (`dressing-city`) — **pas** un roadside |
+| `building_01.png` … `building_03.png` | 887×1774 | ✅ roadside isolés (1 immeuble / PNG) |
+| `bg_panorama.png` | — | ⏳ panorama DA plein écran |
 
-## Encore manquant / à améliorer
+## Bâtiments roadside (convention)
+
+**1 fichier = 1 bâtiment isolé.** Phaser place à gauche/droite et peut `flipX`.
 
 | Fichier | Notes |
 |---------|--------|
-| `reject` / panneau voie fermée | Pas de PNG dédié (procédural) |
-| `distraction` | Pas de PNG dédié |
-| Transparence | `player_moto.png` a un **fond noir** — idéalement PNG transparent pour le menu / auras |
+| `building_01.png` … `building_03.png` | ✅ Portrait ~1:2, un seul immeuble toit→sol |
+| `building_04` … `06` | Optionnel — variantes (hôtel néon, commercial bas…) |
 
-## Convention
+### Ne pas fournir pour roadside
+
+- Scène / skyline / îlot de ville entier
+- Base en diagonale extrême
+- Rue, route, véhicules, personnages
+- Plusieurs bâtiments dans le même PNG
+
+`Building.png` reste réservé au **background global**, pas à `building_0N`.
+
+## Encore manquant
+
+| Fichier | Notes |
+|---------|--------|
+| `building_04` … `06` | Optionnels pour plus de variété |
+| `reject` / panneau voie fermée | Pas de PNG dédié |
+
+## Convention générale
 
 | Propriété | Valeur |
 |-----------|--------|
 | Format | PNG 32-bit, **transparence** |
-| Angle | Vue de dos / ¾ arrière |
-| Fond | Transparent (pas de décor découpé) |
+| Fond | Transparent |
 | Dossier | `public/assets/` |
-
-## Ne pas fournir
-
-- Découpes maquette avec morceau de fond
-- Atlas unique comme fond de course
-- Assets vue de profil pure

@@ -1,5 +1,4 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W } from './config/gameConfig';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { TutorialScene } from './scenes/TutorialScene';
@@ -7,14 +6,23 @@ import { GameScene } from './scenes/GameScene';
 import { VictoryScene } from './scenes/VictoryScene';
 import { GameOverScene } from './scenes/GameOverScene';
 
+function viewportSize(): { width: number; height: number } {
+  const parent = document.getElementById('game-container');
+  const width = parent?.clientWidth || window.innerWidth || 390;
+  const height = parent?.clientHeight || window.innerHeight || 844;
+  return { width: Math.max(280, width), height: Math.max(480, height) };
+}
+
+const initial = viewportSize();
+
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   parent: 'game-container',
-  width: GAME_W,
-  height: GAME_H,
+  width: initial.width,
+  height: initial.height,
   backgroundColor: '#0a0618',
   scale: {
-    mode: Phaser.Scale.FIT,
+    mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
   input: {
@@ -35,7 +43,6 @@ const config: Phaser.Types.Core.GameConfig = {
   },
 };
 
-// Prevent pull-to-refresh / page scroll on mobile
 document.addEventListener(
   'touchmove',
   (e) => {
@@ -44,7 +51,6 @@ document.addEventListener(
   { passive: false },
 );
 
-// Les flèches du clavier déplacent la moto, pas la page
 window.addEventListener(
   'keydown',
   (e) => {

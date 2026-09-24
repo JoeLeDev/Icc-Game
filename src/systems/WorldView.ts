@@ -1,157 +1,509 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W } from '../config/gameConfig';
+import { ROADSIDE_BUILDING_KEYS } from '../config/displaySizes';
+import type { LayoutMetrics } from '../config/responsiveLayout';
+import { getCurrentLayout } from '../config/responsiveLayout';
+import {
+  type PlannedDecor,
+  type RoadsideBand,
+  type RoadsidePropDefinition,
+  planNextAfter,
+  planRoadsideDecor,
+} from '../config/roadsideDecor';
+import {
+  type RoadsidePhase,
+  isFullyOffscreen,
+  roadsidePhase,
+  roadsideScrollMul,
+} from '../config/roadsideLifecycle';
+import { buildingDisplayHeight, propDisplayHeight } from '../config/roadsideScale';
 import { fitTextureScale, textureKey } from './AssetFactory';
 import { DEPTH, RoadProjection } from './RoadProjection';
 
-interface SideProp {
+interface RoadsideItem {
   side: -1 | 1;
   z: number;
+  def: RoadsidePropDefinition;
+  scaleMul: number;
+  band: RoadsideBand;
   sprite: Phaser.GameObjects.Image;
-  fit: number;
+}
+
+interface CityMidItem {
+  side: -1 | 1;
+  z: number;
+  scaleMul: number;
+  logicalKey: string;
+  sprite: Phaser.GameObjects.Image;
 }
 
 /**
- * Décor urbain en perspective : ciel, skyline, route trapèze, bas-côtés parallaxe.
+ * Couches :
+ * FAR  — ciel / skyline / Building.png (bande horizon, non étirée)
+ * MID  — silhouettes bâtiments (continuité horizon → roadside)
+ * NEAR — roadside FAR buildings + NEAR palms/lamps
+ * GAME — route 640 px
  */
 export class WorldView {
   readonly proj = new RoadProjection();
+  private layout: LayoutMetrics = getCurrentLayout();
+  private skyGfx!: Phaser.GameObjects.Graphics;
+  private ambientGfx!: Phaser.GameObjects.Graphics;
   private roadGfx!: Phaser.GameObjects.Graphics;
-  private dashOffset = 0;
-  private cityFar!: Phaser.GameObjects.Container;
-  private cityNear!: Phaser.GameObjects.Container;
-  private props: SideProp[] = [];
-  private speedLines!: Phaser.GameObjects.Graphics;
   private ground!: Phaser.GameObjects.Graphics;
+  private speedLines!: Phaser.GameObjects.Graphics;
+  private dashOffset = 0;
+
+  private bgRoot!: Phaser.GameObjects.Container;
+  private bgSprites: Phaser.GameObjects.Image[] = [];
+  private cityMid: CityMidItem[] = [];
+  private roadside: RoadsideItem[] = [];
+  private debugEnabled = false;
+  private debugGfx: Phaser.GameObjects.Graphics | null = null;
+  private debugLabels: Phaser.GameObjects.Text[] = [];
 
   constructor(private scene: Phaser.Scene) {}
 
   create(): void {
-    this.drawSky();
-    this.cityFar = this.buildSkyline(0.55, DEPTH.cityFar);
-    this.cityNear = this.buildSkyline(0.9, DEPTH.cityNear);
-    this.ground = this.scene.add.graphics().setDepth(DEPTH.road - 1);
+    this.layout = getCurrentLayout();
+    this.proj.applyLayout(this.layout);
+
+    this.skyGfx = this.scene.add.graphics().setDepth(DEPTH.bgSky);
+    this.ambientGfx = this.scene.add.graphics().setDepth(DEPTH.bgAmbient);
+    this.bgRoot = this.scene.add.container(0, 0).setDepth(DEPTH.bgCity);
+    this.ground = this.scene.add.graphics().setDepth(DEPTH.ground);
     this.roadGfx = this.scene.add.graphics().setDepth(DEPTH.road);
     this.speedLines = this.scene.add.graphics().setDepth(DEPTH.fx - 5).setAlpha(0);
-    this.seedProps();
+
+    this.rebuildGlobalBackground();
+    this.seedCityMid();
+    this.seedRoadside();
     this.redrawRoad(0);
   }
 
-  destroy(): void {
-    this.props.forEach((p) => p.sprite.destroy());
-    this.props = [];
+  setDebug(enabled: boolean): void {
+    this.debugEnabled = enabled;
+    if (!enabled) this.clearDebugDraw();
+    else if (!this.debugGfx) {
+      this.debugGfx = this.scene.add.graphics().setDepth(DEPTH.hud + 40);
+    }
   }
 
-  update(dt: number, scrollSpeed: number, boosting: boolean): void {
-    const worldDelta = scrollSpeed * dt;
-    this.dashOffset = (this.dashOffset + worldDelta * 0.45) % 48;
-    this.cityFar.x = Math.sin(this.dashOffset * 0.002) * 6;
-    this.cityNear.x = Math.sin(this.dashOffset * 0.004) * 12;
+  applyLayout(layout: LayoutMetrics): void {
+    this.layout = layout;
+    this.proj.applyLayout(layout);
+    this.rebuildGlobalBackground();
+    for (const m of this.cityMid) this.layoutCityMid(m);
+    for (const item of this.roadside) this.layoutRoadsideItem(item);
     this.redrawRoad(this.dashOffset);
-    this.updateProps(worldDelta);
+  }
+
+  destroy(): void {
+    this.clearBgSprites();
+    this.clearDebugDraw();
+    this.cityMid.forEach((m) => m.sprite.destroy());
+    this.roadside.forEach((i) => i.sprite.destroy());
+    this.cityMid = [];
+    this.roadside = [];
+  }
+
+  update(_dt: number, scrollSpeed: number, boosting: boolean): void {
+    const worldDelta = scrollSpeed * _dt;
+    this.dashOffset = (this.dashOffset + worldDelta * 0.45) % 48;
+    this.redrawRoad(this.dashOffset);
+    this.updateCityMid(worldDelta);
+    this.updateRoadside(worldDelta);
     this.updateSpeedLines(boosting, scrollSpeed);
+    this.parallaxBackground();
+    if (this.debugEnabled) this.drawRoadsideDebug();
   }
 
-  private drawSky(): void {
-    const g = this.scene.add.graphics().setDepth(DEPTH.sky);
+  private get BW(): number {
+    return this.layout.browserWidth;
+  }
+
+  private get BH(): number {
+    return this.layout.browserHeight;
+  }
+
+  private clearBgSprites(): void {
+    for (const s of this.bgSprites) s.destroy();
+    this.bgSprites = [];
+    this.bgRoot.removeAll(true);
+  }
+
+  /**
+   * FAR — skyline + Building.png en bande horizon (pas d’étirement vertical).
+   */
+  private rebuildGlobalBackground(): void {
+    this.clearBgSprites();
+    this.drawSkyAndAmbient();
+
+    const skyline = this.resolveTex('skyline');
+    const city = this.resolveTex('bg-panorama') ?? this.resolveTex('dressing-city');
+
+    if (skyline) this.tileSkyline(skyline);
+    if (city) this.tileCityBackdrop(city);
+  }
+
+  private resolveTex(base: string): string | null {
+    if (this.scene.textures.exists(base)) return base;
+    if (this.scene.textures.exists(base + '_ext')) return base + '_ext';
+    return null;
+  }
+
+  private drawSkyAndAmbient(): void {
+    const g = this.skyGfx;
+    g.clear();
+    const hy = this.proj.horizonY;
+
     g.fillGradientStyle(0x1a0535, 0x1a0535, 0xff6b8a, 0x4a1a6e, 1);
-    g.fillRect(0, 0, GAME_W, this.proj.horizonY + 40);
-    g.fillStyle(0x0a0618, 1);
-    g.fillRect(0, this.proj.horizonY + 30, GAME_W, GAME_H);
-    g.fillStyle(0xff2d95, 0.12);
-    g.fillEllipse(GAME_W / 2, this.proj.horizonY + 10, GAME_W * 0.9, 50);
-    g.fillStyle(0x00e5ff, 0.06);
-    g.fillEllipse(GAME_W / 2, this.proj.horizonY + 4, GAME_W * 0.5, 28);
+    g.fillRect(0, 0, this.BW, hy + 48);
+
+    g.fillStyle(0x0e071c, 1);
+    g.fillRect(0, hy + 36, this.BW, this.BH);
+
+    const glowW = Math.max(this.layout.gameWidth * 1.4, this.BW * 0.55);
+    g.fillStyle(0xff2d95, 0.11);
+    g.fillEllipse(this.layout.centerX, hy + 8, glowW, 56);
+    g.fillStyle(0x00e5ff, 0.055);
+    g.fillEllipse(this.layout.centerX, hy + 2, glowW * 0.55, 32);
+
+    const a = this.ambientGfx;
+    a.clear();
+    const count = Math.max(6, Math.floor(this.BW / 180));
+    for (let i = 0; i < count; i++) {
+      const x = (this.BW / (count + 1)) * (i + 1);
+      const y = hy - 20 - (i % 3) * 18;
+      a.fillStyle(i % 2 === 0 ? 0xff2d95 : 0x00e5ff, 0.07 + (i % 3) * 0.02);
+      a.fillCircle(x, y, 10 + (i % 4) * 4);
+    }
   }
 
-  private buildSkyline(scale: number, depth: number): Phaser.GameObjects.Container {
-    const c = this.scene.add.container(0, 0).setDepth(depth);
+  private tileSkyline(texKey: string): void {
+    const hy = this.proj.horizonY + 4;
+    const targetH = Math.min(150, this.BH * 0.2);
+    const fit = fitTextureScale(this.scene, texKey, targetH);
+    const probe = this.scene.textures.get(texKey).get();
+    const tileW = probe.width * fit;
+    const tiles = Math.ceil(this.BW / Math.max(tileW * 0.85, 1)) + 2;
+    const startX = this.layout.centerX - ((tiles - 1) * tileW * 0.85) / 2;
 
-    if (this.scene.textures.exists('skyline')) {
+    for (let i = 0; i < tiles; i++) {
       const img = this.scene.add
-        .image(GAME_W / 2, this.proj.horizonY + 4, 'skyline')
+        .image(startX + i * tileW * 0.85, hy, texKey)
         .setOrigin(0.5, 1)
-        .setAlpha(0.55 + scale * 0.35);
-      const targetH = 70 + scale * 90;
-      const fit = fitTextureScale(this.scene, 'skyline', targetH);
-      img.setScale(fit * (0.85 + scale * 0.2));
-      c.add(img);
-      if (scale > 0.7) {
-        const img2 = this.scene.add
-          .image(GAME_W / 2 + 40, this.proj.horizonY + 4, 'skyline')
-          .setOrigin(0.5, 1)
-          .setAlpha(0.25)
-          .setScale(img.scaleX * 0.92);
-        c.add(img2);
+        .setScale(fit)
+        .setAlpha(0.55);
+      img.setData('baseX', img.x);
+      img.setData('parallax', 0.12);
+      this.bgRoot.add(img);
+      this.bgSprites.push(img);
+    }
+  }
+
+  /**
+   * Building.png = bande FAR horizontale (temporaire).
+   * Ne pas étirer verticalement — la continuité vient de CITY MID.
+   */
+  private tileCityBackdrop(texKey: string): void {
+    const hy = this.proj.horizonY + 8;
+    // Bande basse volontaire — pas de fill vertical du vide
+    const targetH = Math.min(this.BH * 0.26, 210);
+    const probe = this.scene.textures.get(texKey).get();
+    const scale = targetH / Math.max(1, probe.height);
+    const tileW = probe.width * scale;
+    const overlap = 0.8;
+    const tiles = Math.ceil(this.BW / Math.max(tileW * overlap, 1)) + 2;
+    const startX = this.layout.centerX - ((tiles - 1) * tileW * overlap) / 2;
+
+    for (let i = 0; i < tiles; i++) {
+      const img = this.scene.add.image(startX + i * tileW * overlap, hy, texKey);
+      img.setOrigin(0.5, 1);
+      img.setScale(scale);
+      img.setFlipX(i % 2 === 1);
+      img.setAlpha(0.38);
+      img.setTint(0xb8a8d0);
+      img.setData('baseX', img.x);
+      img.setData('parallax', 0.18);
+      this.bgRoot.add(img);
+      this.bgSprites.push(img);
+    }
+  }
+
+  private parallaxBackground(): void {
+    const drift = Math.sin(this.dashOffset * 0.0025) * 5;
+    for (const img of this.bgSprites) {
+      const baseX = img.getData('baseX') as number;
+      const p = (img.getData('parallax') as number) || 0.2;
+      img.x = baseX + drift * p;
+    }
+  }
+
+  // ——— CITY MID : silhouettes entre horizon et roadside ———
+
+  private seedCityMid(): void {
+    for (const m of this.cityMid) m.sprite.destroy();
+    this.cityMid = [];
+    const keys = [...ROADSIDE_BUILDING_KEYS];
+    for (const side of [-1, 1] as const) {
+      const phase = side < 0 ? 0 : 22;
+      for (let i = 0; i < 10; i++) {
+        const z = 195 + phase + i * 26;
+        const logicalKey = keys[i % keys.length]!;
+        const tex = textureKey(logicalKey, this.scene);
+        const sprite = this.scene.add.image(0, 0, tex).setOrigin(0.5, 1);
+        sprite.setFlipX(side > 0 || i % 3 === 0);
+        sprite.setTint(0x5a3d7a);
+        const item: CityMidItem = {
+          side,
+          z,
+          scaleMul: 0.72 + (i % 4) * 0.06,
+          logicalKey,
+          sprite,
+        };
+        this.cityMid.push(item);
+        this.layoutCityMid(item);
       }
-      return c;
+    }
+  }
+
+  private layoutCityMid(m: CityMidItem): void {
+    const t = this.proj.depthT(m.z);
+    const half = this.proj.roadHalfAt(m.z);
+    const y = this.proj.project(1, m.z).y;
+    const nearH = this.layout.buildingNearHeight * 0.42;
+    const farH = this.layout.buildingFarHeight * 1.15;
+    const h = buildingDisplayHeight(m.z, this.proj.maxZ, nearH, farH) * m.scaleMul;
+    const aspect = m.sprite.frame.width / Math.max(1, m.sprite.frame.height);
+    const w = h * aspect;
+    m.sprite.setDisplaySize(w, h);
+
+    // Plus loin que les roadside FAR — converge vers le même centre
+    const lateral = half + half * 0.95 + w * 0.38 + 12;
+    let x = this.proj.centerX + m.side * lateral;
+    const roadEdge = this.proj.centerX + m.side * (half + 6);
+    if (m.side < 0) x = Math.min(x, roadEdge - 4);
+    else x = Math.max(x, roadEdge + 4);
+
+    m.sprite.setPosition(x, y);
+    m.sprite.setAlpha(0.22 + (1 - t) * 0.18);
+    m.sprite.setDepth(DEPTH.cityMid + (1 - t) * 0.4);
+  }
+
+  private updateCityMid(worldDelta: number): void {
+    for (const m of this.cityMid) {
+      // Parallax lent — couche continue, ne disparaît pas au passage joueur
+      m.z -= worldDelta * 0.55;
+      if (m.z < 160) {
+        m.z += 260 + Math.random() * 40;
+        const keys = [...ROADSIDE_BUILDING_KEYS];
+        m.logicalKey = keys[Math.floor(Math.random() * keys.length)]!;
+        m.sprite.setTexture(textureKey(m.logicalKey, this.scene));
+        m.sprite.setFlipX(m.side > 0 || Math.random() < 0.3);
+        m.sprite.setTint(0x5a3d7a);
+        m.scaleMul = 0.7 + Math.random() * 0.25;
+      }
+      this.layoutCityMid(m);
+    }
+  }
+
+  // ——— ROADSIDE FAR / NEAR ———
+
+  private seedRoadside(): void {
+    for (const item of this.roadside) item.sprite.destroy();
+    this.roadside = [];
+    const plan = planRoadsideDecor(this.proj.maxZ);
+    for (const p of plan) this.spawnFromPlan(p);
+  }
+
+  private spawnFromPlan(p: PlannedDecor): RoadsideItem {
+    const key = textureKey(p.def.key, this.scene);
+    const sprite = this.scene.add.image(0, 0, key).setOrigin(0.5, 1);
+    if (p.def.category === 'building') {
+      sprite.setFlipX(p.side > 0 || Math.random() < 0.2);
+    }
+    const item: RoadsideItem = {
+      side: p.side,
+      z: p.z,
+      def: p.def,
+      scaleMul: p.scaleMul,
+      band: p.band,
+      sprite,
+    };
+    this.roadside.push(item);
+    this.layoutRoadsideItem(item);
+    return item;
+  }
+
+  private layoutRoadsideItem(item: RoadsideItem): void {
+    const maxZ = this.proj.maxZ;
+    const phase = roadsidePhase(item.z, maxZ);
+    const decor = this.proj.projectDecor(item.z);
+    const half = decor.roadHalf;
+    const y = decor.y;
+    const aspect = item.sprite.frame.width / Math.max(1, item.sprite.frame.height);
+
+    let displayH: number;
+    if (item.def.category === 'building') {
+      displayH =
+        buildingDisplayHeight(
+          item.z,
+          maxZ,
+          this.layout.buildingNearHeight,
+          this.layout.buildingFarHeight,
+        ) * item.scaleMul;
+    } else {
+      const near =
+        item.def.category === 'palm' ? this.layout.propPalmHeight : this.layout.propLampHeight;
+      const far = near * 0.2;
+      displayH = propDisplayHeight(item.z, maxZ, near, far) * item.scaleMul;
+    }
+    const displayW = displayH * aspect;
+    item.sprite.setDisplaySize(displayW, displayH);
+
+    const roadPad = 8;
+    let curb: number;
+    let anchorOut: number;
+    if (item.band === 'far') {
+      curb = half * this.layout.buildingLateralFactor + this.layout.buildingMargin;
+      anchorOut = displayW * (phase === 'PASSED' ? 0.48 : 0.4);
+    } else {
+      curb = half * this.layout.propLateralFactor + roadPad;
+      anchorOut = displayW * (phase === 'PASSED' ? 0.35 : 0.2);
     }
 
-    const baseY = this.proj.horizonY + 8;
-    let x = -20;
-    while (x < GAME_W + 40) {
-      const w = Phaser.Math.Between(16, 34) * scale;
-      const h = Phaser.Math.Between(36, 110) * scale;
-      const col = Phaser.Math.RND.pick([0x0d0620, 0x12082a, 0x1a0f38, 0x160a2e]);
-      c.add(this.scene.add.rectangle(x + w / 2, baseY - h / 2, w, h, col, 0.95));
-      const rows = Math.floor(h / 14);
-      for (let r = 0; r < rows; r++) {
-        if (Math.random() > 0.45) {
-          c.add(
-            this.scene.add.rectangle(
-              x + Phaser.Math.Between(4, Math.max(5, w - 8)),
-              baseY - h + 8 + r * 12,
-              3,
-              4,
-              Phaser.Math.RND.pick([0xff2d95, 0x00e5ff, 0xffd54f, 0x9b59ff]),
-              Phaser.Math.FloatBetween(0.35, 0.8),
-            ),
-          );
+    if (phase === 'PASSED') {
+      curb += half * 0.25 * Math.min(1.5, decor.exitT);
+      anchorOut += displayW * 0.15 * Math.min(1.2, decor.exitT);
+    }
+
+    let x = this.proj.centerX + item.side * (half + curb + anchorOut);
+
+    const roadEdge = this.proj.centerX + item.side * (half + roadPad);
+    if (item.side < 0) {
+      x = Math.min(x, roadEdge - 2);
+    } else {
+      x = Math.max(x, roadEdge + 2);
+    }
+
+    item.sprite.setPosition(x, y);
+    const approachT = Math.min(1, Math.max(0, item.z / maxZ));
+    item.sprite.setAlpha(phase === 'PASSED' ? 0.95 : 0.72 + (1 - approachT) * 0.28);
+
+    const nearness =
+      phase === 'PASSED'
+        ? 1 + Math.min(1, decor.exitT) * 0.2
+        : 1 - approachT;
+    if (item.band === 'far') {
+      item.sprite.setDepth(DEPTH.roadsideBuildings + nearness * 0.95);
+    } else {
+      item.sprite.setDepth(DEPTH.roadsideProps + nearness * 0.95);
+    }
+  }
+
+  private updateRoadside(worldDelta: number): void {
+    for (const item of this.roadside) {
+      const phase = roadsidePhase(item.z, this.proj.maxZ);
+      item.z -= worldDelta * roadsideScrollMul(phase, item.band);
+      this.layoutRoadsideItem(item);
+
+      if (item.z <= 0) {
+        const b = item.sprite.getBounds();
+        const off = isFullyOffscreen(
+          { left: b.left, right: b.right, top: b.top, bottom: b.bottom },
+          this.BW,
+          this.BH,
+        );
+        if (off || item.z < -220) {
+          this.recycleRoadsideItem(item);
+          this.layoutRoadsideItem(item);
         }
       }
-      x += w + Phaser.Math.Between(4, 14);
-    }
-    return c;
-  }
-
-  private seedProps(): void {
-    for (let i = 0; i < 10; i++) {
-      this.spawnProp(-1, 40 + i * 55);
-      this.spawnProp(1, 60 + i * 55);
     }
   }
 
-  private spawnProp(side: -1 | 1, z: number): void {
-    const kinds = ['prop-lamp', 'prop-palm', 'prop-building'] as const;
-    const kind = Phaser.Math.RND.pick([...kinds]);
-    const key = textureKey(kind, this.scene);
-    const sprite = this.scene.add.image(0, 0, key).setDepth(DEPTH.roadsideNear);
-    const fit = fitTextureScale(this.scene, key, kind === 'prop-palm' ? 140 : 120);
-    const p: SideProp = { side, z, sprite, fit };
-    this.props.push(p);
-    this.layoutProp(p);
-  }
+  private recycleRoadsideItem(item: RoadsideItem): void {
+    const others: PlannedDecor[] = this.roadside
+      .filter((r) => r !== item)
+      .map((r) => ({
+        side: r.side,
+        z: r.z,
+        def: r.def,
+        scaleMul: r.scaleMul,
+        band: r.band,
+      }));
+    const next = planNextAfter(item.side, others, item.def.category, Math.random, this.proj.maxZ);
 
-  private layoutProp(p: SideProp): void {
-    const t = this.proj.depthT(p.z);
-    const half = this.proj.roadHalfAt(p.z);
-    const margin = Phaser.Math.Linear(30, 8, t);
-    const x = this.proj.centerX + p.side * (half + margin);
-    const y = this.proj.project(1, p.z).y;
-    const scale = Phaser.Math.Linear(1.25, 0.22, t) * p.fit;
-    p.sprite.setPosition(x, y);
-    p.sprite.setScale(scale);
-    p.sprite.setDepth(p.z < 90 ? DEPTH.roadsideNear : DEPTH.roadsideFar);
-    p.sprite.setAlpha(0.5 + (1 - t) * 0.5);
-  }
+    item.z = next.z;
+    item.def = next.def;
+    item.scaleMul = next.scaleMul;
+    item.band = next.band;
 
-
-  private updateProps(worldDelta: number): void {
-    for (const p of this.props) {
-      p.z -= worldDelta;
-      if (p.z < -20) p.z += this.proj.maxZ + Phaser.Math.Between(20, 80);
-      this.layoutProp(p);
+    item.sprite.setTexture(textureKey(item.def.key, this.scene));
+    if (item.def.category === 'building') {
+      item.sprite.setFlipX(item.side > 0 || Math.random() < 0.2);
+      item.sprite.clearTint();
+    } else {
+      item.sprite.setFlipX(false);
+      item.sprite.clearTint();
     }
   }
+
+  private clearDebugDraw(): void {
+    this.debugGfx?.clear();
+    for (const t of this.debugLabels) t.destroy();
+    this.debugLabels = [];
+  }
+
+  private drawRoadsideDebug(): void {
+    if (!this.debugGfx) {
+      this.debugGfx = this.scene.add.graphics().setDepth(DEPTH.hud + 40);
+    }
+    const g = this.debugGfx;
+    g.clear();
+    for (const t of this.debugLabels) t.destroy();
+    this.debugLabels = [];
+
+    for (const item of this.roadside) {
+      const phase: RoadsidePhase = roadsidePhase(item.z, this.proj.maxZ);
+      const b = item.sprite.getBounds();
+      const color =
+        phase === 'PASSED'
+          ? 0xff1744
+          : phase === 'NEAR'
+            ? 0xffd54f
+            : phase === 'APPROACHING'
+              ? 0x69f0ae
+              : 0x80d8ff;
+
+      g.lineStyle(1, color, 0.7);
+      g.strokeRect(b.left, b.top, b.width, b.height);
+      g.fillStyle(color, 0.15);
+      g.fillCircle(item.sprite.x, item.sprite.y, 5);
+
+      const label = this.scene.add
+        .text(item.sprite.x, item.sprite.y - 8, '', {
+          fontFamily: 'monospace',
+          fontSize: '9px',
+          color: '#ffffff',
+          backgroundColor: '#000000aa',
+          padding: { x: 2, y: 1 },
+        })
+        .setDepth(DEPTH.hud + 41)
+        .setOrigin(0.5, 1);
+      label.setText(
+        [
+          `${phase} ${item.def.category}`,
+          `z=${item.z.toFixed(0)} side=${item.side > 0 ? 'R' : 'L'}`,
+          `sc=${item.sprite.displayHeight.toFixed(0)} ${item.band}`,
+          `b=[${b.left.toFixed(0)},${b.top.toFixed(0)}..${b.right.toFixed(0)},${b.bottom.toFixed(0)}]`,
+        ].join('\n'),
+      );
+      this.debugLabels.push(label);
+    }
+  }
+
+  // ——— Route ———
 
   private redrawRoad(dashOffset: number): void {
     const g = this.roadGfx;
@@ -159,13 +511,13 @@ export class WorldView {
     this.ground.clear();
 
     const top = this.proj.horizonY;
-    const bot = GAME_H + 10;
+    const bot = this.BH + 10;
     const far = this.proj.farRoadHalf;
     const near = this.proj.nearRoadHalf;
     const cx = this.proj.centerX;
 
     this.ground.fillStyle(0x12081f, 1);
-    this.ground.fillRect(0, top, GAME_W, bot - top);
+    this.ground.fillRect(0, top, this.BW, bot - top);
 
     g.fillStyle(0x14101f, 1);
     g.beginPath();
@@ -215,9 +567,11 @@ export class WorldView {
     }
     this.speedLines.setAlpha(0.12 + intensity * 0.28);
     this.speedLines.lineStyle(1.5, 0x00e5ff, 0.45);
+    const left = this.layout.gameOffsetX + 24;
+    const right = this.layout.gameOffsetX + this.layout.gameWidth - 24;
     for (let i = 0; i < 7; i++) {
-      const x = Phaser.Math.Between(24, GAME_W - 24);
-      const y1 = Phaser.Math.Between(this.proj.horizonY + 50, GAME_H - 140);
+      const x = Phaser.Math.Between(left, right);
+      const y1 = Phaser.Math.Between(this.proj.horizonY + 50, this.BH - 140);
       this.speedLines.lineBetween(x, y1, x, y1 + 10 + intensity * 36);
     }
   }

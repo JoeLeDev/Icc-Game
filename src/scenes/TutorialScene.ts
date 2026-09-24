@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { EQUIPMENTS, GAME_H, GAME_W } from '../config/gameConfig';
-import { fitTextureScale } from '../systems/AssetFactory';
+import { EQUIPMENTS } from '../config/gameConfig';
+import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
+import { applyDisplayBox, applyHudEquipmentIcon } from '../systems/SpriteDisplay';
 import { audio } from '../utils/AudioManager';
 
 export class TutorialScene extends Phaser.Scene {
@@ -9,10 +10,15 @@ export class TutorialScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x070412, 0.96);
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const layout = computeLayout(W, H, readSafeAreaInsets());
+    setCurrentLayout(layout);
+
+    this.add.rectangle(W / 2, H / 2, W, H, 0x070412, 0.96);
 
     this.add
-      .text(GAME_W / 2, 70, 'COMMENT JOUER ?', {
+      .text(W / 2, 70, 'COMMENT JOUER ?', {
         fontFamily: 'Orbitron',
         fontSize: '22px',
         color: '#ff2d95',
@@ -20,11 +26,11 @@ export class TutorialScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     // swipe illustration
-    this.add.rectangle(GAME_W / 2, 160, 70, 120, 0x1a0a30).setStrokeStyle(2, 0xe040fb);
-    const hand = this.add.text(GAME_W / 2, 170, '👆', { fontSize: '28px' }).setOrigin(0.5);
+    this.add.rectangle(W / 2, 160, 70, 120, 0x1a0a30).setStrokeStyle(2, 0xe040fb);
+    const hand = this.add.text(W / 2, 170, '👆', { fontSize: '28px' }).setOrigin(0.5);
     this.tweens.add({
       targets: hand,
-      x: GAME_W / 2 + 40,
+      x: W / 2 + 40,
       duration: 700,
       yoyo: true,
       repeat: -1,
@@ -41,7 +47,7 @@ export class TutorialScene extends Phaser.Scene {
 
     tips.forEach((t, i) => {
       this.add
-        .text(GAME_W / 2, 250 + i * 48, t, {
+        .text(W / 2, 250 + i * 48, t, {
           fontFamily: 'Outfit',
           fontSize: '14px',
           color: '#e1bee7',
@@ -53,14 +59,14 @@ export class TutorialScene extends Phaser.Scene {
 
     // equipment preview row
     EQUIPMENTS.forEach((eq, i) => {
-      this.add
-        .image(40 + i * 48, GAME_H - 160, `eq-icon-${eq.id}`)
-        .setDisplaySize(36, 36);
+      const icon = this.add.image(40 + i * 48, H - 160, `eq-icon-${eq.id}`);
+      applyHudEquipmentIcon(icon);
     });
-    this.add.image(GAME_W - 40, GAME_H - 160, 'love').setScale(fitTextureScale(this, 'love', 56) * 0.7);
+    const love = this.add.image(W - 40, H - 160, 'love');
+    applyDisplayBox(love, layout.hudIconSize);
 
     this.add
-      .text(GAME_W / 2, GAME_H - 120, 'Objectif : survivre jusqu\'à la conquête finale', {
+      .text(W / 2, H - 120, 'Objectif : survivre jusqu\'à la conquête finale', {
         fontFamily: 'Outfit',
         fontSize: '12px',
         color: '#9b59ff',
@@ -68,11 +74,11 @@ export class TutorialScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     const play = this.add
-      .rectangle(GAME_W / 2, GAME_H - 60, 200, 48, 0x9b59ff)
+      .rectangle(W / 2, H - 60, 200, 48, 0x9b59ff)
       .setStrokeStyle(2, 0xff2d95)
       .setInteractive({ useHandCursor: true });
     this.add
-      .text(GAME_W / 2, GAME_H - 60, 'JOUER', {
+      .text(W / 2, H - 60, 'JOUER', {
         fontFamily: 'Orbitron',
         fontSize: '18px',
         color: '#fff',

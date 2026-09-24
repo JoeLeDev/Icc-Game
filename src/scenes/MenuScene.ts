@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W } from '../config/gameConfig';
-import { fitTextureScale } from '../systems/AssetFactory';
+import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
+import { applyDisplayWidth } from '../systems/SpriteDisplay';
 import { audio } from '../utils/AudioManager';
 import { Storage } from '../utils/Storage';
 
@@ -12,11 +12,16 @@ export class MenuScene extends Phaser.Scene {
   }
 
   create(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const layout = computeLayout(W, H, readSafeAreaInsets());
+    setCurrentLayout(layout);
+
     this.drawBackground();
 
     // Brand
     this.add
-      .text(GAME_W / 2, 120, 'KHAYIL', {
+      .text(W / 2, layout.padTop + 72, 'KHAYIL', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '42px',
         color: '#ff2d95',
@@ -25,7 +30,7 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(GAME_W / 2, 162, '2026', {
+      .text(W / 2, layout.padTop + 114, '2026', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '28px',
         color: '#e040fb',
@@ -33,7 +38,7 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(GAME_W / 2, 210, 'ÉQUIPÉE POUR\nCONQUÉRIR', {
+      .text(W / 2, layout.padTop + 162, 'ÉQUIPÉE POUR\nCONQUÉRIR', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '22px',
         color: '#ffffff',
@@ -43,33 +48,33 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     // Decorative motorcycle
-    const moto = this.add.image(GAME_W / 2, 380, 'player').setAlpha(0.95);
-    moto.setScale(fitTextureScale(this, 'player', 118) * 1.55);
-    this.add.circle(GAME_W / 2, 400, 70, 0xff2d95, 0.12);
+    const moto = this.add.image(W / 2, H * 0.45, 'player').setAlpha(0.95);
+    applyDisplayWidth(moto, layout.menuPlayerWidth, layout.playerDisplayHeightMax * 1.4);
+    this.add.circle(W / 2, H * 0.45 + 20, layout.menuPlayerWidth * 0.7, 0xff2d95, 0.12);
 
     const best = Storage.getBestDistance();
     this.add
-      .text(GAME_W / 2, 480, best > 0 ? `Meilleure distance : ${best} m` : 'Prête à conquérir ?', {
+      .text(W / 2, H * 0.57, best > 0 ? `Meilleure distance : ${best} m` : 'Prête à conquérir ?', {
         fontFamily: 'Outfit, sans-serif',
         fontSize: '13px',
         color: '#b39ddb',
       })
       .setOrigin(0.5);
 
-    this.makeGradientButton(GAME_W / 2, 560, 'JOUER', () => {
+    this.makeGradientButton(W / 2, H * 0.66, 'JOUER', () => {
       audio.ui();
       this.scene.start('Game');
     });
 
     // bottom row
-    const y = GAME_H - 90;
-    this.makeIconBtn(GAME_W * 0.22, y, '🏆', 'Classement\nlocal', () => this.showLeaderboard());
-    this.makeIconBtn(GAME_W * 0.5, y, '?', 'Comment\njouer', () => {
+    const y = H - layout.padBottom - 70;
+    this.makeIconBtn(W * 0.22, y, '🏆', 'Classement\nlocal', () => this.showLeaderboard());
+    this.makeIconBtn(W * 0.5, y, '?', 'Comment\njouer', () => {
       audio.ui();
       this.scene.start('Tutorial');
     });
     this.soundBtn = this.makeIconBtn(
-      GAME_W * 0.78,
+      W * 0.78,
       y,
       audio.isEnabled() ? '🔊' : '🔇',
       'Son',
@@ -82,29 +87,22 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private drawBackground(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
     const g = this.add.graphics();
     g.fillGradientStyle(0x0a0618, 0x0a0618, 0x2a1050, 0x1a0535, 1);
-    g.fillRect(0, 0, GAME_W, GAME_H);
+    g.fillRect(0, 0, W, H);
 
     // neon orbs
     for (let i = 0; i < 8; i++) {
       this.add.circle(
-        Phaser.Math.Between(20, GAME_W - 20),
-        Phaser.Math.Between(40, GAME_H - 40),
+        Phaser.Math.Between(20, W - 20),
+        Phaser.Math.Between(40, H - 40),
         Phaser.Math.Between(2, 4),
         Phaser.Math.RND.pick([0xff2d95, 0x00e5ff, 0x9b59ff]),
         0.5,
       );
     }
-
-    // road hint at bottom
-    const road = this.add.tileSprite(GAME_W / 2, GAME_H - 40, GAME_W, 80, 'road').setAlpha(0.45);
-    this.tweens.add({
-      targets: road,
-      tilePositionY: -200,
-      duration: 4000,
-      repeat: -1,
-    });
   }
 
   private makeGradientButton(x: number, y: number, label: string, cb: () => void): void {
@@ -164,7 +162,7 @@ export class MenuScene extends Phaser.Scene {
   private showLeaderboard(): void {
     audio.ui();
     const board = Storage.getLeaderboard();
-    const panel = this.add.container(GAME_W / 2, GAME_H / 2).setDepth(50);
+    const panel = this.add.container(this.scale.width / 2, this.scale.height / 2).setDepth(50);
     const bg = this.add.rectangle(0, 0, 320, 420, 0x0a0618, 0.95).setStrokeStyle(2, 0x9b59ff);
     const title = this.add
       .text(0, -180, 'CLASSEMENT LOCAL', {

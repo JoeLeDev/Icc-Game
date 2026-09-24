@@ -75,6 +75,17 @@ export function generateTextures(scene: Phaser.Scene): void {
   drawSideBuilding(g);
   g.generateTexture('prop-building', 36, 56);
 
+  // Placeholders bâtiments isolés (1 objet / PNG — remplacés par building_0N.png)
+  const buildingSpecs: { key: string; w: number; h: number; hue: number }[] = [
+    { key: 'building_01', w: 48, h: 120, hue: 0x1a0f38 },
+    { key: 'building_02', w: 56, h: 140, hue: 0x12082a },
+    { key: 'building_03', w: 42, h: 100, hue: 0x160a2e },
+  ];
+  buildingSpecs.forEach((b) => {
+    drawRoadsideBuildingPlaceholder(g, b.w, b.h, b.hue);
+    g.generateTexture(b.key, b.w, b.h);
+  });
+
   g.clear();
   g.fillStyle(0xffffff, 1);
   g.fillCircle(4, 4, 4);
@@ -116,39 +127,18 @@ export async function tryLoadExternalAssets(scene: Phaser.Scene): Promise<string
     { key: 'prop-lamp', path: 'assets/prop_lamp.png' },
     { key: 'prop-palm', path: 'assets/prop_palm.png' },
     { key: 'skyline', path: 'assets/skyline.png' },
+    // Background global desktop (plein écran) — Building.png en attendant un panorama dédié
+    { key: 'dressing-city', path: 'assets/Building.png' },
+    // Hook futur : panorama DA Khayil exact
+    { key: 'bg-panorama', path: 'assets/bg_panorama.png' },
+    { key: 'building_01', path: 'assets/building_01.png' },
+    { key: 'building_02', path: 'assets/building_02.png' },
+    { key: 'building_03', path: 'assets/building_03.png' },
   ];
   EQUIPMENTS.forEach((eq) => {
     candidates.push({ key: `eq-${eq.id}`, path: `assets/eq_${eq.id}.png` });
+    // Même source PNG — la taille HUD est forcée à l’affichage, pas à la texture
     candidates.push({ key: `eq-icon-${eq.id}`, path: `assets/eq_${eq.id}.png` });
-  });
-
-  /** Hauteurs d’affichage cibles (px jeu) — calées sur la moto (~118) */
-  const TARGET_H: Record<string, number> = {
-    player: 118,
-    car: 72,
-    truck: 96,
-    barrel: 44,
-    barrier: 26,
-    cone: 34,
-    hole: 26,
-    love: 46,
-    depression: 52,
-    calomnie: 40,
-    peur: 64,
-    doute: 42,
-    projectile: 12,
-    colere: 48,
-    'prop-lamp': 120,
-    'prop-palm': 140,
-    'bonus-magnet': 36,
-    'bonus-shield': 36,
-    'bonus-life': 36,
-    'bonus-slowmo': 36,
-    'bonus-boost': 36,
-  };
-  EQUIPMENTS.forEach((eq) => {
-    TARGET_H[`eq-${eq.id}`] = 48;
-    TARGET_H[`eq-icon-${eq.id}`] = 32;
   });
 
   const loaded: string[] = [];
@@ -164,8 +154,6 @@ export async function tryLoadExternalAssets(scene: Phaser.Scene): Promise<string
     }
   }
 
-  // Mémorise les facteurs d’échelle pour le gameplay
-  (scene.registry as Phaser.Data.DataManager).set('textureTargetH', TARGET_H);
   return loaded;
 }
 
@@ -188,17 +176,13 @@ export function textureKey(base: string, scene: Phaser.Scene): string {
   return base;
 }
 
-/** Scale pour qu’une texture HD ait la hauteur logique attendue. */
+/** Scale legacy (skyline) — préférer SpriteDisplay.setDisplaySize pour le gameplay. */
 export function fitTextureScale(scene: Phaser.Scene, key: string, fallbackTargetH?: number): number {
   if (!scene.textures.exists(key)) return 1;
   const frame = scene.textures.getFrame(key);
   const h = Math.max(1, frame.height || 64);
-  const lookup = key.replace(/_ext$/, '');
-  const targets = scene.registry.get('textureTargetH') as Record<string, number> | undefined;
-  const target = targets?.[lookup] ?? fallbackTargetH;
-  // Texture procédurale déjà à la bonne taille : pas de redimensionnement
-  if (target == null) return h <= 130 ? 1 : 64 / h;
-  return target / h;
+  if (fallbackTargetH != null) return fallbackTargetH / h;
+  return h <= 130 ? 1 : 64 / h;
 }
 
 function loadImageIfExists(scene: Phaser.Scene, key: string, path: string): Promise<boolean> {
@@ -541,6 +525,31 @@ function drawLove(g: Phaser.GameObjects.Graphics): void {
   drawHeart(g, 28, 28, 18, 0xff2d95);
   g.lineStyle(2, 0xff80ab, 1);
   g.strokeCircle(28, 28, 26);
+}
+
+function drawRoadsideBuildingPlaceholder(
+  g: Phaser.GameObjects.Graphics,
+  w: number,
+  h: number,
+  hue: number,
+): void {
+  g.clear();
+  g.fillStyle(hue, 0.95);
+  g.fillRect(0, 0, w, h);
+  g.fillStyle(0x0a0618, 0.5);
+  g.fillRect(0, 0, w, 6);
+  const cols = Math.max(2, Math.floor(w / 14));
+  const rows = Math.max(3, Math.floor(h / 18));
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if ((r + c) % 3 === 0) continue;
+      g.fillStyle(
+        Phaser.Math.RND.pick([0xff2d95, 0x00e5ff, 0xffd54f, 0x9b59ff]),
+        Phaser.Math.FloatBetween(0.35, 0.75),
+      );
+      g.fillRect(4 + c * 12, 10 + r * 16, 5, 6);
+    }
+  }
 }
 
 function drawLamp(g: Phaser.GameObjects.Graphics): void {

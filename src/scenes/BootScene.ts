@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { generateTextures, tryLoadExternalAssets } from '../systems/AssetFactory';
-import { GAME_H, GAME_W } from '../config/gameConfig';
+import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -8,14 +8,18 @@ export class BootScene extends Phaser.Scene {
   }
 
   create(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    setCurrentLayout(computeLayout(W, H, readSafeAreaInsets()));
+
     generateTextures(this);
 
     const g = this.add.graphics();
     g.fillGradientStyle(0x120828, 0x120828, 0x2a1050, 0x1a0a40, 1);
-    g.fillRect(0, 0, GAME_W, GAME_H);
+    g.fillRect(0, 0, W, H);
 
     this.add
-      .text(GAME_W / 2, GAME_H / 2 - 20, 'KHAYIL 2026', {
+      .text(W / 2, H / 2 - 20, 'KHAYIL 2026', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '28px',
         color: '#ff2d95',
@@ -24,7 +28,7 @@ export class BootScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(GAME_W / 2, GAME_H / 2 + 20, 'Chargement…', {
+      .text(W / 2, H / 2 + 20, 'Chargement…', {
         fontFamily: 'Outfit, sans-serif',
         fontSize: '14px',
         color: '#ce93d8',

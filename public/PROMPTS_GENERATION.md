@@ -114,3 +114,50 @@ Polished stylized 3D mobile-game sprite, coherent Khayil neon urban night art di
 
 Polished stylized 3D mobile-game sprite, coherent Khayil neon urban night art direction: sculpted readable forms, deep purple/navy materials, cyan edge highlights, restrained magenta lighting and gold detailing. High contrast, distinct recognizable silhouette at small display size. One single isolated object, centered and fully contained, 8% transparent margin, real transparent alpha PNG background. No floor, no setting, no backdrop, no text, no watermark, no cast shadow outside silhouette. No sprite sheet. One stylized urban PALM TREE roadside prop, tall gently curving textured trunk, readable crown of broad dark green fronds with subtle cyan and purple rim lighting. Slightly elevated perspective matching a rear-view road runner. Whole tree contained from trunk base to leaf tips, no ground, no soil patch, no pot, no setting. Portrait ratio 7:12, intended export 140x240.
 
+## building_04.png (template — varier architecture pour 05…06)
+
+Create ONE isolated roadside building sprite for a vertical motorcycle racing game.
+
+IMPORTANT: exactly ONE building in the entire image.
+
+This is an individual game decoration asset, similar to a single tree sprite. It is NOT a city scene, NOT a skyline, NOT a city block and NOT a background.
+
+Match the Khayil 2026 visual direction: cinematic modern African/futuristic metropolis at sunset/night, deep purple and navy shadows, vibrant magenta/pink neon accents, warm orange/golden illuminated windows, premium semi-realistic game art.
+
+Create one tall modern urban building with a strong readable silhouette.
+
+The entire building must be visible from roof to ground.
+
+Requirements:
+
+exactly one building
+isolated object
+transparent background
+portrait composition
+approximately 1:2 aspect ratio
+straight horizontal ground/base
+minimal transparent margins
+no other buildings behind it
+no skyline
+no street
+no road
+no vehicles
+no people
+no text
+no sky
+no horizon
+no large foreground palm tree hiding the facade
+no scenery attached to the sides
+
+Perspective should be subtle and appropriate for an object positioned beside a road viewed from a motorcycle behind the player.
+
+Do NOT create an extreme low-angle architectural render.
+
+The sprite must remain clearly readable when displayed at only 100–200 px tall in-game.
+
+Keep large architectural shapes and avoid excessive tiny details.
+
+Output as a clean transparent PNG game sprite.
+
+Variantes suggérées restantes : `building_04` hôtel néon, `building_05` commercial bas, `building_06` tour mixte.
+

@@ -1,6 +1,10 @@
 import Phaser from 'phaser';
-import { EQUIPMENTS, EquipmentId, GAME_H, GAME_W } from '../config/gameConfig';
-import { fitTextureScale } from '../systems/AssetFactory';
+import { EQUIPMENTS, EquipmentId } from '../config/gameConfig';
+import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
+import {
+  applyDisplayBox,
+  applyDisplayWidth,
+} from '../systems/SpriteDisplay';
 import { audio } from '../utils/AudioManager';
 import { formatShareText, shareResult } from '../utils/Share';
 import { Storage } from '../utils/Storage';
@@ -20,13 +24,19 @@ export class VictoryScene extends Phaser.Scene {
   }
 
   create(data: EndData): void {
-    this.add.rectangle(0, 0, GAME_W, GAME_H, 0x120828, 1).setOrigin(0);
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const layout = computeLayout(W, H, readSafeAreaInsets());
+    setCurrentLayout(layout);
+
+    this.add.rectangle(0, 0, W, H, 0x120828, 1).setOrigin(0);
     // celebratory glow
-    this.add.circle(GAME_W / 2, 200, 120, 0xff2d95, 0.15);
-    this.add.image(GAME_W / 2, 200, 'player').setScale(fitTextureScale(this, 'player', 118) * 1.45);
+    this.add.circle(W / 2, H * 0.24, 120, 0xff2d95, 0.15);
+    const moto = this.add.image(W / 2, H * 0.24, 'player');
+    applyDisplayWidth(moto, layout.victoryPlayerWidth, layout.playerDisplayHeightMax * 1.3);
 
     this.add
-      .text(GAME_W / 2, 320, 'TU ES ÉQUIPÉE\nPOUR CONQUÉRIR !', {
+      .text(W / 2, 320, 'TU ES ÉQUIPÉE\nPOUR CONQUÉRIR !', {
         fontFamily: 'Orbitron',
         fontSize: '24px',
         color: '#ff2d95',
@@ -37,7 +47,7 @@ export class VictoryScene extends Phaser.Scene {
 
     this.add
       .text(
-        GAME_W / 2,
+        W / 2,
         400,
         `${data.distance} m  ·  ${data.equipment}/7  ·  ${data.avoided} esquivés`,
         { fontFamily: 'Outfit', fontSize: '13px', color: '#ce93d8' },
@@ -46,7 +56,7 @@ export class VictoryScene extends Phaser.Scene {
 
     const best = Storage.getBestDistance();
     this.add
-      .text(GAME_W / 2, 425, `Record local : ${best} m`, {
+      .text(W / 2, 425, `Record local : ${best} m`, {
         fontFamily: 'Outfit',
         fontSize: '12px',
         color: '#9e9e9e',
@@ -60,16 +70,15 @@ export class VictoryScene extends Phaser.Scene {
       const x = 70 + col * 80;
       const y = 480 + row * 60;
       const got = data.collected.includes(eq.id);
-      const icon = this.add
-        .image(x, y, `eq-${eq.id}`)
-        .setScale(fitTextureScale(this, `eq-${eq.id}`, 56) * 0.75)
-        .setAlpha(got ? 1 : 0.25);
+      const icon = this.add.image(x, y, `eq-icon-${eq.id}`).setAlpha(got ? 1 : 0.25);
+      applyDisplayBox(icon, layout.hudIconSize * 1.35);
       if (got) {
-        const s0 = icon.scaleX;
+        const sx = icon.scaleX;
+        const sy = icon.scaleY;
         this.tweens.add({
           targets: icon,
-          scaleX: s0 * 1.12,
-          scaleY: s0 * 1.12,
+          scaleX: sx * 1.12,
+          scaleY: sy * 1.12,
           duration: 400,
           yoyo: true,
           repeat: -1,
@@ -78,9 +87,10 @@ export class VictoryScene extends Phaser.Scene {
       }
     });
     if (data.love) {
-      this.add.image(GAME_W / 2 + 120, 540, 'love').setScale(fitTextureScale(this, 'love', 56) * 0.9);
+      const love = this.add.image(W / 2 + 120, 540, 'love');
+      applyDisplayBox(love, layout.worldLoveSize);
       this.add
-        .text(GAME_W / 2 + 120, 575, 'Amour', {
+        .text(W / 2 + 120, 575, 'Amour', {
           fontFamily: 'Outfit',
           fontSize: '11px',
           color: '#ff80ab',
@@ -88,7 +98,7 @@ export class VictoryScene extends Phaser.Scene {
         .setOrigin(0.5);
     }
 
-    this.btn(GAME_W / 2, 660, 'PARTAGER MON RÉSULTAT', async () => {
+    this.btn(W / 2, 660, 'PARTAGER MON RÉSULTAT', async () => {
       audio.ui();
       const text = formatShareText({
         won: true,
@@ -102,12 +112,12 @@ export class VictoryScene extends Phaser.Scene {
       else if (r === 'cancelled') this.feedback('Partage annulé');
     });
 
-    this.btn(GAME_W / 2, 720, 'REJOUER', () => {
+    this.btn(W / 2, 720, 'REJOUER', () => {
       audio.ui();
       this.scene.start('Game');
     }, 0x2a1050);
 
-    this.btn(GAME_W / 2, 775, 'ACCUEIL', () => {
+    this.btn(W / 2, 775, 'ACCUEIL', () => {
       audio.ui();
       this.scene.start('Menu');
     }, 0x1a0a30);
@@ -126,7 +136,7 @@ export class VictoryScene extends Phaser.Scene {
 
   private feedback(msg: string): void {
     const t = this.add
-      .text(GAME_W / 2, GAME_H / 2, msg, {
+      .text(this.scale.width / 2, this.scale.height / 2, msg, {
         fontFamily: 'Outfit',
         fontSize: '16px',
         color: '#00e5ff',

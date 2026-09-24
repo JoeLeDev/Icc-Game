@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { EquipmentId, GAME_H, GAME_W } from '../config/gameConfig';
-import { fitTextureScale } from '../systems/AssetFactory';
+import { EquipmentId } from '../config/gameConfig';
+import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
+import { applyDisplayWidth } from '../systems/SpriteDisplay';
 import { audio } from '../utils/AudioManager';
 import { formatShareText, shareResult } from '../utils/Share';
 import { Storage } from '../utils/Storage';
@@ -20,7 +21,12 @@ export class GameOverScene extends Phaser.Scene {
   }
 
   create(data: EndData): void {
-    this.add.rectangle(0, 0, GAME_W, GAME_H, 0x0a0618, 1).setOrigin(0);
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const layout = computeLayout(W, H, readSafeAreaInsets());
+    setCurrentLayout(layout);
+
+    this.add.rectangle(0, 0, W, H, 0x0a0618, 1).setOrigin(0);
 
     // moody clouds
     ['DÉPRESSION', 'DOUTE', 'PEUR'].forEach((label, i) => {
@@ -32,15 +38,11 @@ export class GameOverScene extends Phaser.Scene {
         .setOrigin(0.5);
     });
 
-    this.add
-      .image(GAME_W / 2, 280, 'player')
-      .setScale(fitTextureScale(this, 'player', 118) * 1.25)
-      .setAngle(15)
-      .setAlpha(0.7)
-      .setTint(0x666688);
+    const moto = this.add.image(W / 2, 280, 'player').setAngle(15).setAlpha(0.7).setTint(0x666688);
+    applyDisplayWidth(moto, layout.gameOverPlayerWidth, layout.playerDisplayHeightMax * 1.2);
 
     this.add
-      .text(GAME_W / 2, 380, 'GAME OVER', {
+      .text(W / 2, 380, 'GAME OVER', {
         fontFamily: 'Orbitron',
         fontSize: '32px',
         color: '#ff2d95',
@@ -48,7 +50,7 @@ export class GameOverScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(GAME_W / 2, 430, 'Relève-toi. Tu es appelée à conquérir.', {
+      .text(W / 2, 430, 'Relève-toi. Tu es appelée à conquérir.', {
         fontFamily: 'Outfit',
         fontSize: '14px',
         color: '#e1bee7',
@@ -59,7 +61,7 @@ export class GameOverScene extends Phaser.Scene {
 
     this.add
       .text(
-        GAME_W / 2,
+        W / 2,
         480,
         `${data.equipment}/7 équipements  ·  ${data.distance} m${data.love ? '  ·  Amour ❤' : ''}`,
         { fontFamily: 'Outfit', fontSize: '13px', color: '#9b59ff' },
@@ -68,19 +70,19 @@ export class GameOverScene extends Phaser.Scene {
 
     const best = Storage.getBestDistance();
     this.add
-      .text(GAME_W / 2, 510, `Record local : ${best} m`, {
+      .text(W / 2, 510, `Record local : ${best} m`, {
         fontFamily: 'Outfit',
         fontSize: '12px',
         color: '#757575',
       })
       .setOrigin(0.5);
 
-    this.btn(GAME_W / 2, 590, 'RÉESSAYER', () => {
+    this.btn(W / 2, 590, 'RÉESSAYER', () => {
       audio.ui();
       this.scene.start('Game');
     });
 
-    this.btn(GAME_W / 2, 650, 'PARTAGER', async () => {
+    this.btn(W / 2, 650, 'PARTAGER', async () => {
       audio.ui();
       const r = await shareResult(
         formatShareText({
@@ -94,7 +96,7 @@ export class GameOverScene extends Phaser.Scene {
       else if (r === 'cancelled') this.feedback('Partage annulé');
     }, 0x2a1050);
 
-    this.btn(GAME_W / 2, 710, 'RETOUR À L\'ACCUEIL', () => {
+    this.btn(W / 2, 710, 'RETOUR À L\'ACCUEIL', () => {
       audio.ui();
       this.scene.start('Menu');
     }, 0x1a0a30);
@@ -113,7 +115,7 @@ export class GameOverScene extends Phaser.Scene {
 
   private feedback(msg: string): void {
     const t = this.add
-      .text(GAME_W / 2, GAME_H / 2, msg, {
+      .text(this.scale.width / 2, this.scale.height / 2, msg, {
         fontFamily: 'Outfit',
         fontSize: '16px',
         color: '#00e5ff',
