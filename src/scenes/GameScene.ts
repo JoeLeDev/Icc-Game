@@ -447,7 +447,8 @@ export class GameScene extends Phaser.Scene {
     const y = this.world.proj.playerY;
     const pw = this.layout.playerDisplayWidth;
     this.playerShadow = this.add.ellipse(0, 40, pw * 0.85, 12, 0x000000, 0.45);
-    this.playerGlow = this.add.circle(0, 8, pw * 0.55, 0xff2d95, 0.16);
+    // Halo uniquement pendant le boost (invisible par défaut)
+    this.playerGlow = this.add.circle(0, 8, pw * 0.55, 0xff6e40, 0);
     this.loveAura = this.add
       .circle(0, 0, pw * 0.85, 0xff80ab, 0)
       .setStrokeStyle(3, 0xff2d95, 0);
@@ -1003,9 +1004,9 @@ export class GameScene extends Phaser.Scene {
     this.loveAura.setStrokeStyle(3, 0xff2d95, love ? 0.9 : 0);
     if (love) this.loveAura.rotation += dt * 1.5;
 
-    // boost glow
+    // boost glow — visible seulement pendant le boost
     const boost = this.hasEffect('boost');
-    this.playerGlow.setFillStyle(boost ? 0xff6e40 : 0xff2d95, boost ? 0.35 : 0.15);
+    this.playerGlow.setFillStyle(0xff6e40, boost ? 0.35 : 0);
   }
 
   private updateHudEffects(): void {
