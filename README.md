@@ -5,7 +5,7 @@ Mini-jeu web HTML5 (runner) pour la Conférence des Femmes Khayil 2026.
 ## Stack
 
 - Vite + TypeScript + Phaser 3
-- Assets procéduraux (aucune image externe requise)
+- Décor pseudo-3D + textures procédurales (remplaçables par PNG dans `public/assets/`)
 - Pas de backend — scores et préférences en `localStorage`
 
 ## Lancer
@@ -29,5 +29,5 @@ npm run preview
 - Objectif : récupérer les **7 équipements**, survivre à la phase finale
 - L'**Amour** est un joker rare (non requis)
 
-Réglages (vitesse, spawns, durées) : `src/config/gameConfig.ts`
-# Icc-Game
+Réglages : `src/config/gameConfig.ts`  
+Liste des sprites manquants : `docs/ASSETS_MANQUANTS.md`

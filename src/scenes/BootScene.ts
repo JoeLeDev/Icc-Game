@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { generateTextures } from '../systems/AssetFactory';
+import { generateTextures, tryLoadExternalAssets } from '../systems/AssetFactory';
 import { GAME_H, GAME_W } from '../config/gameConfig';
 
 export class BootScene extends Phaser.Scene {
@@ -10,7 +10,6 @@ export class BootScene extends Phaser.Scene {
   create(): void {
     generateTextures(this);
 
-    // loading splash
     const g = this.add.graphics();
     g.fillGradientStyle(0x120828, 0x120828, 0x2a1050, 0x1a0a40, 1);
     g.fillRect(0, 0, GAME_W, GAME_H);
@@ -32,6 +31,12 @@ export class BootScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    this.time.delayedCall(400, () => this.scene.start('Menu'));
+    void tryLoadExternalAssets(this).then((loaded) => {
+      if (import.meta.env.DEV && loaded.length) {
+        console.info(`[Khayil] ${loaded.length} assets PNG chargés`, loaded);
+      }
+    }).finally(() => {
+      this.time.delayedCall(200, () => this.scene.start('Menu'));
+    });
   }
 }

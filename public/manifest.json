@@ -1,0 +1,437 @@
+[
+  {
+    "file": "player_moto.png",
+    "width": 256,
+    "height": 384,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 110616,
+    "visible_bounds_alpha_gt16": [
+      42,
+      2,
+      214,
+      379
+    ],
+    "sha256": "334dfd6877323344d941f3d87c84783a4f5f5f879607a8ee7d3f2a922a4aaf1e"
+  },
+  {
+    "file": "car.png",
+    "width": 192,
+    "height": 288,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 60972,
+    "visible_bounds_alpha_gt16": [
+      5,
+      56,
+      187,
+      224
+    ],
+    "sha256": "ccc98606837a9adaade8b2749658d85d21617251d9cda8970717d7ae4b4679ea"
+  },
+  {
+    "file": "truck.png",
+    "width": 220,
+    "height": 360,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 91027,
+    "visible_bounds_alpha_gt16": [
+      14,
+      17,
+      206,
+      330
+    ],
+    "sha256": "51dc2acef3a614bbc5c3246a80fc097dd2057aa0eea057cef3f6bb33edd5ef9a"
+  },
+  {
+    "file": "barrel.png",
+    "width": 128,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 33598,
+    "visible_bounds_alpha_gt16": [
+      18,
+      8,
+      110,
+      154
+    ],
+    "sha256": "deab7f5ce43dbfd037ca523dc8472bf031eb58badd51074691f10a68deb09c9e"
+  },
+  {
+    "file": "barrier.png",
+    "width": 192,
+    "height": 96,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 19809,
+    "visible_bounds_alpha_gt16": [
+      2,
+      10,
+      190,
+      86
+    ],
+    "sha256": "367f2d93e5b0b39dcaaa6084be3e642b7f657c0b3d9a57966a5e5787a787d15a"
+  },
+  {
+    "file": "cone.png",
+    "width": 96,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 15353,
+    "visible_bounds_alpha_gt16": [
+      3,
+      5,
+      93,
+      125
+    ],
+    "sha256": "ffb928cdc78660ec6fa186acaa81339a80a3fbe0d15727e91a4412709b614f9b"
+  },
+  {
+    "file": "hole.png",
+    "width": 160,
+    "height": 112,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 17619,
+    "visible_bounds_alpha_gt16": [
+      9,
+      28,
+      153,
+      86
+    ],
+    "sha256": "a4f1492492c7d5e6fc47aee1054247b6bd38517b12ed4208f27ac5513d5edfee"
+  },
+  {
+    "file": "love_heart.png",
+    "width": 192,
+    "height": 192,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 63290,
+    "visible_bounds_alpha_gt16": [
+      7,
+      9,
+      185,
+      177
+    ],
+    "sha256": "b47411fcfc56ca0ff89594da5e48e6040d6895a4ae091f6373e755d9f921edd3"
+  },
+  {
+    "file": "bonus_magnet.png",
+    "width": 128,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 22451,
+    "visible_bounds_alpha_gt16": [
+      17,
+      8,
+      111,
+      119
+    ],
+    "sha256": "b87a93d4a752b6ee66b9629dc8e39b9b34e2918b77786762a634b4b0d88c003f"
+  },
+  {
+    "file": "bonus_shield.png",
+    "width": 128,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 27931,
+    "visible_bounds_alpha_gt16": [
+      12,
+      6,
+      116,
+      123
+    ],
+    "sha256": "07d45fc150af2b4dfc20c0b6eb4d71757717444160f48e16886d99863fe06be0"
+  },
+  {
+    "file": "bonus_life.png",
+    "width": 128,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 18463,
+    "visible_bounds_alpha_gt16": [
+      9,
+      17,
+      119,
+      111
+    ],
+    "sha256": "386c3548a14f962875c63b1db9468293e1eebab515e8cd0808f2ee7413b6a10f"
+  },
+  {
+    "file": "bonus_slowmo.png",
+    "width": 128,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 26164,
+    "visible_bounds_alpha_gt16": [
+      14,
+      7,
+      114,
+      122
+    ],
+    "sha256": "5698c4bed0a4c4df856984958e2dc029cd65a384853e88f12e2c306b304dda51"
+  },
+  {
+    "file": "bonus_boost.png",
+    "width": 128,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 17841,
+    "visible_bounds_alpha_gt16": [
+      21,
+      5,
+      107,
+      124
+    ],
+    "sha256": "59aa97092afeb95aaf077f9af638079786f99b86857387fedd9219657d8e751a"
+  },
+  {
+    "file": "eq_belt.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 28622,
+    "visible_bounds_alpha_gt16": [
+      1,
+      43,
+      159,
+      118
+    ],
+    "sha256": "1fe1cf9fbf7a74d95e9072f16712860484a98f369b99aca381275d498b5385d2"
+  },
+  {
+    "file": "eq_breastplate.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 47208,
+    "visible_bounds_alpha_gt16": [
+      5,
+      5,
+      156,
+      155
+    ],
+    "sha256": "9d59966c569f32ae651df5334c09254a3acaf99516025ce4ae830df230adec33"
+  },
+  {
+    "file": "eq_shoes.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 44322,
+    "visible_bounds_alpha_gt16": [
+      14,
+      11,
+      150,
+      153
+    ],
+    "sha256": "414d4717563f3fb0fe12571953379d21d1e416d976576a6743385f41a8b46b06"
+  },
+  {
+    "file": "eq_shield.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 40474,
+    "visible_bounds_alpha_gt16": [
+      17,
+      1,
+      143,
+      157
+    ],
+    "sha256": "a01b97fea007b2bf794e7e0645e2456192ac242a916e3c4d26bd2cd8334a7ba5"
+  },
+  {
+    "file": "eq_helmet.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 34559,
+    "visible_bounds_alpha_gt16": [
+      30,
+      2,
+      131,
+      158
+    ],
+    "sha256": "1a92d4dcc3464fd4b34be1f328f96efae5664ab9549080f5614ad7ea26b06a1b"
+  },
+  {
+    "file": "eq_sword.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 18980,
+    "visible_bounds_alpha_gt16": [
+      6,
+      4,
+      156,
+      156
+    ],
+    "sha256": "48f8bdc414d7bc1a712ae940264428a429f2aab9d335fa3143108b0354c101ae"
+  },
+  {
+    "file": "eq_prayer.png",
+    "width": 160,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 45116,
+    "visible_bounds_alpha_gt16": [
+      14,
+      6,
+      149,
+      154
+    ],
+    "sha256": "ef4732bbaf2593c6f99c18cab1204afbad78d16fcd2e5be1ce81739a5091e0c4"
+  },
+  {
+    "file": "enemy_depression.png",
+    "width": 220,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 47783,
+    "visible_bounds_alpha_gt16": [
+      6,
+      21,
+      218,
+      139
+    ],
+    "sha256": "d8f2be07802ac828b43045a252a7e3cbd5c5ffc60c44e7744e6f153b336b4980"
+  },
+  {
+    "file": "enemy_calomnie.png",
+    "width": 128,
+    "height": 128,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 23234,
+    "visible_bounds_alpha_gt16": [
+      8,
+      8,
+      120,
+      123
+    ],
+    "sha256": "62da6960b2f37684e121502cfc308c50d0d08b8d61626356df1623d1bdf39115"
+  },
+  {
+    "file": "enemy_peur.png",
+    "width": 160,
+    "height": 220,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 44956,
+    "visible_bounds_alpha_gt16": [
+      30,
+      5,
+      148,
+      216
+    ],
+    "sha256": "92539c2b2831a0f48288aa9f9baeb40581b036c64ba839b8b2e4030e95c0754d"
+  },
+  {
+    "file": "enemy_doute.png",
+    "width": 140,
+    "height": 140,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 18147,
+    "visible_bounds_alpha_gt16": [
+      30,
+      9,
+      113,
+      132
+    ],
+    "sha256": "130f855c9cf306b1f4f8e77cc439d67724d35abde7ee2e38a2edaa5e37417bd2"
+  },
+  {
+    "file": "fx_projectile.png",
+    "width": 64,
+    "height": 32,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 2349,
+    "visible_bounds_alpha_gt16": [
+      8,
+      8,
+      58,
+      23
+    ],
+    "sha256": "feb466d6bb9876ce418850cfe00b64fef7cb8750f8aa0316fd4c0cd15e5b0650"
+  },
+  {
+    "file": "fx_fire.png",
+    "width": 192,
+    "height": 160,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 27110,
+    "visible_bounds_alpha_gt16": [
+      24,
+      18,
+      173,
+      127
+    ],
+    "sha256": "15f5eb356c9e6faf0614219fb80bb69a1fbb08eace17be5d1c886b561c9e13a4"
+  },
+  {
+    "file": "skyline.png",
+    "width": 780,
+    "height": 240,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 141975,
+    "visible_bounds_alpha_gt16": [
+      83,
+      30,
+      698,
+      209
+    ],
+    "sha256": "c9c7738283e72770e05a9252c633f18a1719b03215d0d59532a4e9fc81685b03"
+  },
+  {
+    "file": "prop_lamp.png",
+    "width": 96,
+    "height": 220,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 10414,
+    "visible_bounds_alpha_gt16": [
+      14,
+      10,
+      91,
+      207
+    ],
+    "sha256": "ecb7b521592fbede22196ee04c8b5ba61723bddd1b64bb5dc4523b2332f35e0e"
+  },
+  {
+    "file": "prop_palm.png",
+    "width": 140,
+    "height": 240,
+    "format": "PNG",
+    "mode": "RGBA",
+    "size_bytes": 43116,
+    "visible_bounds_alpha_gt16": [
+      8,
+      4,
+      135,
+      236
+    ],
+    "sha256": "d784aab0047ff10536af64c0c1f3f8566ff31b1a814323a1388268242b033f69"
+  }
+]

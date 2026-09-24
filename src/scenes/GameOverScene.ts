@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { EquipmentId, GAME_H, GAME_W } from '../config/gameConfig';
+import { fitTextureScale } from '../systems/AssetFactory';
 import { audio } from '../utils/AudioManager';
 import { formatShareText, shareResult } from '../utils/Share';
 import { Storage } from '../utils/Storage';
@@ -31,7 +32,12 @@ export class GameOverScene extends Phaser.Scene {
         .setOrigin(0.5);
     });
 
-    this.add.image(GAME_W / 2, 280, 'player').setScale(1.3).setAngle(15).setAlpha(0.7).setTint(0x666688);
+    this.add
+      .image(GAME_W / 2, 280, 'player')
+      .setScale(fitTextureScale(this, 'player', 118) * 1.25)
+      .setAngle(15)
+      .setAlpha(0.7)
+      .setTint(0x666688);
 
     this.add
       .text(GAME_W / 2, 380, 'GAME OVER', {

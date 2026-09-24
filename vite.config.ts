@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -9,5 +10,9 @@ export default defineConfig({
   build: {
     target: 'es2022',
     assetsInlineLimit: 0,
+  },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
   },
 });

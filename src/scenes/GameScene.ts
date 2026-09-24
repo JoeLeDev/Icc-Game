@@ -1,17 +1,31 @@
 import Phaser from 'phaser';
 import {
+  AttackFamily,
   BONUSES,
   CONFIG,
   EQUIPMENTS,
   EquipmentId,
   GAME_H,
   GAME_W,
-  LANE_X,
   LANES,
   getScrollSpeed,
+  getThreatTimeScale,
   getTier,
+  isAttackUnlocked,
+  nextLaneIndex,
+  readDevQuery,
 } from '../config/gameConfig';
+import { fitTextureScale, textureKey } from '../systems/AssetFactory';
+import { DEPTH, entityDrawDepth } from '../systems/RoadProjection';
+import {
+  RoadOccupant,
+  chooseObstacleLanes,
+  pickEquipmentId,
+  pickSafeCollectLane,
+} from '../systems/SpawnFairness';
+import { WorldView } from '../systems/WorldView';
 import { audio } from '../utils/AudioManager';
+import { Rng, createRng } from '../utils/Rng';
 import { Storage } from '../utils/Storage';
 
 type EntityKind =
@@ -32,6 +46,8 @@ type EntityKind =
 interface LaneEntity {
   sprite: Phaser.GameObjects.Sprite | Phaser.GameObjects.Image | Phaser.GameObjects.Container;
   lane: number;
+  /** Profondeur logique (0 = plan joueuse, >0 vers l’horizon) */
+  worldZ: number;
   kind: EntityKind;
   equipmentId?: EquipmentId;
   bonusId?: string;
@@ -44,6 +60,9 @@ interface LaneEntity {
   fromBehind?: boolean;
   life?: number;
   isDoubt?: boolean;
+  /** Projectiles / UI écran : ignorer la projection Z */
+  screenSpace?: boolean;
+  baseScale?: number;
 }
 
 interface ActiveEffect {
@@ -52,16 +71,19 @@ interface ActiveEffect {
 }
 
 export class GameScene extends Phaser.Scene {
-  private roads: Phaser.GameObjects.TileSprite[] = [];
+  private world!: WorldView;
   private player!: Phaser.GameObjects.Container;
   private playerSprite!: Phaser.GameObjects.Image;
   private playerGlow!: Phaser.GameObjects.Arc;
   private loveAura!: Phaser.GameObjects.Arc;
+  private playerShadow!: Phaser.GameObjects.Ellipse;
+  private trail!: Phaser.GameObjects.Particles.ParticleEmitter;
 
   private lane: number = CONFIG.player.startLane;
-  private targetX: number = LANE_X[CONFIG.player.startLane];
+  private targetX = 0;
   private lives: number = CONFIG.player.maxLives;
-  private invincibleUntil = 0;
+  /** Invincibilité restante (secondes de simulation) */
+  private invincibleRemaining = 0;
   private hasTempShield = false;
 
   private collected = new Set<EquipmentId>();
@@ -73,27 +95,38 @@ export class GameScene extends Phaser.Scene {
   private effects: ActiveEffect[] = [];
 
   private scrollSpeed: number = CONFIG.speed.base;
-  private worldTimeScale = 1;
   private playing = false;
   private paused = false;
+  private countdownActive = false;
   private finalPhase = false;
   private finalTimer = 0;
   private gameOver = false;
   private won = false;
 
+  /** Temps de simulation (s) — n'avance pas en pause */
+  private simTime = 0;
+
   private spawnTimers = {
-    obstacle: 1.5,
-    equipment: 2.5,
-    bonus: 8,
-    attack: 6,
+    obstacle: 3.5,
+    equipment: CONFIG.spawn.firstEquipmentDelay,
+    bonus: 16,
+    attack: 22,
   };
+  /** Respiration après attaque (s) — freine obstacle + attaque */
+  private breathRemaining = 0;
+  private rng!: Rng;
+  private debugMode = false;
+  private debugText: Phaser.GameObjects.Text | null = null;
+  private runSeed: number | null = null;
+  private inviRing!: Phaser.GameObjects.Arc;
 
   private closedLane: number | null = null;
-  private closeUntil = 0;
-  private closeWarnUntil = 0;
+  private closeRemaining = 0;
+  private closeWarningRemaining = 0;
   private closeBarrier: Phaser.GameObjects.Image | null = null;
+  private closeWarnRect: Phaser.GameObjects.Rectangle | null = null;
 
-  private distractionUntil = 0;
+  private distractionRemaining = 0;
   private distractionOverlay!: Phaser.GameObjects.Rectangle;
 
   private hudHearts: Phaser.GameObjects.Image[] = [];
@@ -110,25 +143,81 @@ export class GameScene extends Phaser.Scene {
   private rightBtn!: Phaser.GameObjects.Container;
   private pauseOverlay!: Phaser.GameObjects.Container;
   private pauseMenuHits: Phaser.GameObjects.Rectangle[] = [];
+  private hudHits: Phaser.GameObjects.Rectangle[] = [];
 
   private swipeStartX = 0;
-  private keys!: {
+  private laneTween: Phaser.Tweens.Tween | null = null;
+  private lastLaneKeyAt = 0;
+  private keys: {
     left: Phaser.Input.Keyboard.Key;
     right: Phaser.Input.Keyboard.Key;
     a: Phaser.Input.Keyboard.Key;
     d: Phaser.Input.Keyboard.Key;
     esc: Phaser.Input.Keyboard.Key;
-  };
+  } | null = null;
 
   private particles!: Phaser.GameObjects.Particles.ParticleEmitter;
   private lastSpeedTier = -1;
-  private cityBuildings: Phaser.GameObjects.Rectangle[] = [];
+  private hudTopBar!: Phaser.GameObjects.Rectangle;
+  private eqPanel!: Phaser.GameObjects.Rectangle;
+
+  private readonly onFocusCanvas = (): void => {
+    this.game.canvas.focus();
+  };
+  /** Secours fenêtre : Phaser rate parfois les flèches selon le focus / capture */
+  private readonly onWindowKeyDown = (e: KeyboardEvent): void => {
+    if (!this.sys?.isActive()) return;
+    if (e.repeat) return;
+    switch (e.code) {
+      case 'ArrowLeft':
+      case 'KeyA':
+        e.preventDefault();
+        this.changeLaneFromKey(-1);
+        break;
+      case 'ArrowRight':
+      case 'KeyD':
+        e.preventDefault();
+        this.changeLaneFromKey(1);
+        break;
+      case 'Escape':
+        e.preventDefault();
+        this.togglePause();
+        break;
+      default:
+        break;
+    }
+  };
+  private readonly onPointerDown = (p: Phaser.Input.Pointer): void => {
+    const hits = this.input.hitTestPointer(p);
+    const onHud = hits.some(
+      (obj) => (obj as Phaser.GameObjects.GameObject & { isHudControl?: boolean }).isHudControl,
+    );
+    this.swipeStartX = onHud ? Number.NaN : p.x;
+  };
+  private readonly onPointerUp = (p: Phaser.Input.Pointer): void => {
+    if (!this.canControl() || Number.isNaN(this.swipeStartX)) return;
+    const dx = p.x - this.swipeStartX;
+    if (Math.abs(dx) > 40) this.changeLane(dx > 0 ? 1 : -1);
+  };
+  private readonly onVisibility = (): void => {
+    if (document.hidden && !this.paused && (this.playing || this.countdownActive) && !this.gameOver && !this.won) {
+      this.setPaused(true);
+    }
+  };
 
   constructor() {
     super('Game');
   }
 
   create(): void {
+    const q = readDevQuery();
+    this.debugMode = q.debug;
+    this.runSeed = q.seed;
+    this.rng = createRng(q.seed);
+    if (q.seed != null && this.debugMode) {
+      console.info(`[Khayil debug] seed=${q.seed}`);
+    }
+
     this.resetState();
     this.createWorld();
     this.createPlayer();
@@ -136,14 +225,42 @@ export class GameScene extends Phaser.Scene {
     this.createPauseOverlay();
     this.setupInput();
     this.createParticles();
+    if (this.debugMode) this.createDebugOverlay();
     this.startCountdown();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.onShutdown, this);
+  }
+
+  private onShutdown(): void {
+    this.cleanupInput();
+    this.time.paused = false;
+    this.tweens.killAll();
+    this.time.removeAllEvents();
+    this.destroyEntities();
+    this.world?.destroy();
+    this.laneTween = null;
+    this.hudHearts = [];
+    this.hudEqIcons = [];
+    this.pauseMenuHits = [];
+    this.hudHits = [];
+    this.closeBarrier = null;
+    this.closeWarnRect = null;
   }
 
   private resetState(): void {
+    this.destroyEntities();
+    this.world?.destroy();
+    this.hudHearts = [];
+    this.hudEqIcons = [];
+    this.pauseMenuHits = [];
+    this.hudHits = [];
+    this.closeBarrier = null;
+    this.closeWarnRect = null;
+    this.laneTween = null;
+
     this.lane = CONFIG.player.startLane;
-    this.targetX = LANE_X[this.lane];
     this.lives = CONFIG.player.maxLives;
-    this.invincibleUntil = 0;
+    this.invincibleRemaining = 0;
     this.hasTempShield = false;
     this.collected.clear();
     this.loveCollected = false;
@@ -152,143 +269,162 @@ export class GameScene extends Phaser.Scene {
     this.entities = [];
     this.effects = [];
     this.scrollSpeed = CONFIG.speed.base;
-    this.worldTimeScale = 1;
     this.playing = false;
     this.paused = false;
+    this.countdownActive = false;
     this.finalPhase = false;
     this.finalTimer = 0;
     this.gameOver = false;
     this.won = false;
+    this.simTime = 0;
     this.closedLane = null;
-    this.spawnTimers = { obstacle: 2.2, equipment: 1.8, bonus: 10, attack: 8 };
+    this.closeRemaining = 0;
+    this.closeWarningRemaining = 0;
+    this.distractionRemaining = 0;
+    this.spawnTimers = {
+      obstacle: 3.5,
+      equipment: CONFIG.spawn.firstEquipmentDelay,
+      bonus: 16,
+      attack: 22,
+    };
+    this.breathRemaining = 0;
     this.lastSpeedTier = -1;
+    this.swipeStartX = 0;
+    this.time.paused = false;
+  }
+
+  private destroyEntities(): void {
+    for (const e of this.entities) {
+      e.warning?.destroy();
+      e.label?.destroy();
+      e.sprite?.destroy();
+    }
+    this.entities = [];
   }
 
   private createWorld(): void {
-    // sky
-    const sky = this.add.graphics();
-    sky.fillGradientStyle(0x1a0a40, 0x1a0a40, 0xff6b9d, 0x7c4dff, 1);
-    sky.fillRect(0, 0, GAME_W, GAME_H * 0.35);
-
-    // distant city silhouette
-    for (let i = 0; i < 14; i++) {
-      const h = Phaser.Math.Between(40, 120);
-      const b = this.add.rectangle(
-        20 + i * 28,
-        GAME_H * 0.32 - h / 2,
-        Phaser.Math.Between(18, 30),
-        h,
-        Phaser.Math.RND.pick([0x12082a, 0x1a0f38, 0x0d0620]),
-      );
-      // neon windows
-      for (let w = 0; w < 3; w++) {
-        this.add.rectangle(
-          b.x - 6 + (w % 2) * 10,
-          b.y - h / 2 + 10 + w * 14,
-          4,
-          6,
-          Phaser.Math.RND.pick([0xff2d95, 0x00e5ff, 0x9b59ff]),
-          0.55,
-        );
-      }
-      this.cityBuildings.push(b);
-    }
-
-    // road layers
-    for (let i = 0; i < 16; i++) {
-      const road = this.add.tileSprite(GAME_W / 2, i * 64, GAME_W, 64, 'road');
-      this.roads.push(road);
-    }
-
-    // side neon glow
-    const leftGlow = this.add.rectangle(20, GAME_H / 2, 8, GAME_H, 0x9b59ff, 0.15);
-    const rightGlow = this.add.rectangle(GAME_W - 20, GAME_H / 2, 8, GAME_H, 0xff2d95, 0.15);
+    this.world = new WorldView(this);
+    this.world.create();
+    this.targetX = this.world.proj.laneScreenX(this.lane);
 
     this.distractionOverlay = this.add
       .rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x00e5ff, 0)
-      .setDepth(50);
+      .setDepth(DEPTH.fx);
   }
 
   private createPlayer(): void {
-    const y = GAME_H * CONFIG.player.yRatio;
-    this.playerGlow = this.add.circle(0, 10, 36, 0xff2d95, 0.15);
-    this.loveAura = this.add.circle(0, 0, 55, 0xff80ab, 0).setStrokeStyle(3, 0xff2d95, 0);
-    this.playerSprite = this.add.image(0, 0, 'player');
-    this.player = this.add.container(this.targetX, y, [this.playerGlow, this.loveAura, this.playerSprite]);
-    this.player.setDepth(20);
+    const y = this.world.proj.playerY;
+    this.playerShadow = this.add.ellipse(0, 42, 48, 14, 0x000000, 0.45);
+    this.playerGlow = this.add.circle(0, 8, 38, 0xff2d95, 0.16);
+    this.loveAura = this.add.circle(0, 0, 58, 0xff80ab, 0).setStrokeStyle(3, 0xff2d95, 0);
+    this.inviRing = this.add.circle(0, 4, 48, 0x00e5ff, 0).setStrokeStyle(3, 0x00e5ff, 0);
+    this.playerSprite = this.add.image(0, 0, textureKey('player', this));
+    this.playerSprite.setScale(fitTextureScale(this, this.playerSprite.texture.key, 118));
+    this.player = this.add.container(this.targetX, y, [
+      this.playerShadow,
+      this.playerGlow,
+      this.loveAura,
+      this.inviRing,
+      this.playerSprite,
+    ]);
+    this.player.setDepth(DEPTH.player);
     this.player.setSize(CONFIG.player.hitboxW, CONFIG.player.hitboxH);
+
+    this.trail = this.add.particles(0, 0, 'particle-pink', {
+      speed: { min: 10, max: 40 },
+      scale: { start: 0.55, end: 0 },
+      alpha: { start: 0.45, end: 0 },
+      lifespan: 320,
+      frequency: 40,
+      follow: this.player,
+      followOffset: { x: 0, y: 36 },
+      blendMode: 'ADD',
+    });
+    this.trail.setDepth(DEPTH.player - 1);
   }
 
   private createParticles(): void {
-    this.particles = this.add.particles(0, 0, 'particle', {
+    this.particles = this.add.particles(0, 0, 'particle-gold', {
       speed: { min: 40, max: 160 },
-      scale: { start: 1.2, end: 0 },
-      lifespan: 500,
+      scale: { start: 1.1, end: 0 },
+      lifespan: 480,
       emitting: false,
       tint: [0xffd54f, 0xff2d95, 0x00e5ff, 0xffffff],
     });
-    this.particles.setDepth(40);
+    this.particles.setDepth(DEPTH.fx);
   }
 
   private createHud(): void {
-    // hearts
+    this.hudTopBar = this.add
+      .rectangle(GAME_W / 2, 0, GAME_W, 64, 0x070412, 0.55)
+      .setOrigin(0.5, 0)
+      .setDepth(DEPTH.hud - 1)
+      .setScrollFactor(0);
+
     for (let i = 0; i < CONFIG.player.maxLives; i++) {
-      const h = this.add.image(24 + i * 34, 28, 'heart').setScrollFactor(0).setDepth(100);
+      const h = this.add
+        .image(22 + i * 32, 26, 'heart')
+        .setScrollFactor(0)
+        .setDepth(DEPTH.hud)
+        .setDisplaySize(26, 26);
       this.hudHearts.push(h);
     }
 
     this.hudEqText = this.add
-      .text(GAME_W / 2, 22, 'Équipements : 0/7', {
+      .text(GAME_W / 2, 18, 'Équipements : 0/7', {
         fontFamily: 'Outfit, sans-serif',
-        fontSize: '14px',
+        fontSize: '13px',
         color: '#fff',
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
-      .setDepth(100);
+      .setDepth(DEPTH.hud);
 
     this.hudDist = this.add
-      .text(GAME_W - 52, 28, '0 M', {
+      .text(GAME_W - 70, 26, '0 M', {
         fontFamily: 'Orbitron, sans-serif',
         fontSize: '13px',
         color: '#fff',
       })
-      .setOrigin(0.5)
-      .setDepth(100);
+      .setOrigin(1, 0.5)
+      .setDepth(DEPTH.hud);
 
-    // equipment column — inset pour ne pas être coupée par le bord
-    const eqPanel = this.add
-      .rectangle(36, 70 + 3 * 36, 40, 7 * 36 + 8, 0x0a0618, 0.45)
-      .setStrokeStyle(1, 0x9b59ff, 0.35)
-      .setDepth(99)
+    // Colonne équipements hors chaussée (bas-côté gauche)
+    this.eqPanel = this.add
+      .rectangle(18, 200, 36, 7 * 38 + 16, 0x0a0618, 0.62)
+      .setStrokeStyle(1, 0xffd54f, 0.35)
+      .setDepth(DEPTH.hud - 1)
       .setScrollFactor(0);
-    void eqPanel;
 
     EQUIPMENTS.forEach((eq, i) => {
+      const iconKey = textureKey(`eq-icon-${eq.id}`, this);
       const icon = this.add
-        .image(36, 70 + i * 36, `eq-icon-${eq.id}`)
+        .image(18, 78 + i * 38, iconKey)
         .setOrigin(0.5)
-        .setAlpha(0.35)
-        .setDepth(100)
+        .setAlpha(0.38)
+        .setDepth(DEPTH.hud)
         .setScrollFactor(0)
-        .setDisplaySize(30, 30);
+        .setDisplaySize(32, 32)
+        .setTint(0x8899aa);
       this.hudEqIcons.push(icon);
     });
 
     this.hudEffects = this.add
-      .text(GAME_W / 2, 48, '', {
+      .text(GAME_W / 2, 42, '', {
         fontFamily: 'Outfit, sans-serif',
-        fontSize: '12px',
+        fontSize: '11px',
         color: '#00e5ff',
         align: 'center',
+        backgroundColor: '#00000066',
+        padding: { x: 8, y: 3 },
       })
       .setOrigin(0.5)
-      .setDepth(100);
+      .setDepth(DEPTH.hud);
 
     this.toast = this.add
-      .text(GAME_W / 2, GAME_H * 0.38, '', {
+      .text(GAME_W / 2, GAME_H * 0.4, '', {
         fontFamily: 'Orbitron, sans-serif',
-        fontSize: '18px',
+        fontSize: '16px',
         color: '#ffd54f',
         stroke: '#000',
         strokeThickness: 4,
@@ -296,23 +432,23 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setAlpha(0)
-      .setDepth(110);
+      .setDepth(DEPTH.hud + 10);
 
     this.speedBanner = this.add
-      .text(GAME_W / 2, GAME_H * 0.3, '', {
+      .text(GAME_W / 2, GAME_H * 0.32, '', {
         fontFamily: 'Orbitron, sans-serif',
-        fontSize: '16px',
+        fontSize: '15px',
         color: '#ff2d95',
         stroke: '#000',
         strokeThickness: 3,
       })
       .setOrigin(0.5)
       .setAlpha(0)
-      .setDepth(110);
+      .setDepth(DEPTH.hud + 10);
 
     this.flash = this.add
       .rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0xffffff, 0)
-      .setDepth(90);
+      .setDepth(DEPTH.fx + 5);
 
     this.countdownText = this.add
       .text(GAME_W / 2, GAME_H * 0.42, '', {
@@ -323,16 +459,15 @@ export class GameScene extends Phaser.Scene {
         strokeThickness: 4,
       })
       .setOrigin(0.5)
-      .setDepth(120)
+      .setDepth(DEPTH.hud + 20)
       .setAlpha(0);
 
-    // pause button
-    this.pauseBtn = this.makeButton(GAME_W - 28, 28, 'Ⅱ', () => this.togglePause(), 36);
-    this.pauseBtn.setDepth(150);
+    this.pauseBtn = this.makeButton(GAME_W - 28, 26, 'Ⅱ', () => this.togglePause(), 34);
+    this.leftBtn = this.makeButton(48, GAME_H - 56, '◀', () => this.changeLane(-1), 56, 0.65);
+    this.rightBtn = this.makeButton(GAME_W - 48, GAME_H - 56, '▶', () => this.changeLane(1), 56, 0.65);
 
-    // touch lane buttons — zones larges et toujours cliquables
-    this.leftBtn = this.makeButton(48, GAME_H - 56, '◀', () => this.changeLane(-1), 52, 0.55);
-    this.rightBtn = this.makeButton(GAME_W - 48, GAME_H - 56, '▶', () => this.changeLane(1), 52, 0.55);
+    // Les contrôles HUD doivent recevoir les clics même s’ils se chevauchent avec le décor
+    this.input.setTopOnly(false);
   }
 
   private makeButton(
@@ -343,24 +478,27 @@ export class GameScene extends Phaser.Scene {
     size = 40,
     alpha = 0.55,
   ): Phaser.GameObjects.Container {
-    const hitPad = Math.max(72, size + 24);
-    const bg = this.add.circle(0, 0, size / 2, 0x1a0a30, alpha).setStrokeStyle(2, 0xff2d95, 0.85);
+    const hitPad = Math.max(96, size + 40);
+    const bg = this.add.circle(0, 0, size / 2, 0x1a0a30, alpha).setStrokeStyle(2, 0xff2d95, 0.9);
     const txt = this.add
       .text(0, 0, label, { fontFamily: 'Outfit', fontSize: `${Math.round(size * 0.45)}px`, color: '#fff' })
       .setOrigin(0.5);
-    const c = this.add.container(x, y, [bg, txt]).setDepth(150).setScrollFactor(0);
+    const c = this.add.container(x, y, [bg, txt]).setDepth(DEPTH.hud + 40).setScrollFactor(0);
 
-    // Hitbox monde toujours active (même quasi invisible)
-    const hit = this.add.rectangle(x, y, hitPad, hitPad, 0xffffff, 0.01).setScrollFactor(0).setDepth(160);
+    // Zone dédiée (hors container) — hitbox fiable au touch / clic
+    const hit = this.add.zone(x, y, hitPad, hitPad).setScrollFactor(0).setDepth(DEPTH.hud + 50);
     hit.setInteractive({ useHandCursor: true });
     if (hit.input) {
       (hit.input as Phaser.Types.Input.InteractiveObject & { alwaysEnabled?: boolean }).alwaysEnabled = true;
     }
-    (hit as Phaser.GameObjects.Rectangle & { isHudControl?: boolean }).isHudControl = true;
+    (hit as Phaser.GameObjects.Zone & { isHudControl?: boolean }).isHudControl = true;
+    this.hudHits.push(hit as unknown as Phaser.GameObjects.Rectangle);
 
     const press = () => {
-      bg.setFillStyle(0x9b59ff, 0.9);
-      this.time.delayedCall(100, () => bg.setFillStyle(0x1a0a30, alpha));
+      bg.setFillStyle(0x9b59ff, 0.95);
+      this.time.delayedCall(120, () => {
+        if (bg.active) bg.setFillStyle(0x1a0a30, alpha);
+      });
       if (label === 'Ⅱ') {
         if (this.gameOver || this.won) return;
         audio.ui();
@@ -373,7 +511,6 @@ export class GameScene extends Phaser.Scene {
     };
 
     hit.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      // Empêche le swipe global de traiter ce tap
       this.swipeStartX = Number.NaN;
       pointer.event?.preventDefault?.();
       press();
@@ -427,89 +564,129 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
-    // Focus canvas pour recevoir le clavier
     const canvas = this.game.canvas;
     canvas.setAttribute('tabindex', '0');
     canvas.style.outline = 'none';
-    this.input.on('pointerdown', () => canvas.focus());
+    canvas.focus();
+    this.input.on('pointerdown', this.onFocusCanvas);
 
     const kb = this.input.keyboard;
     if (kb) {
-      // Empêche le scroll de la page avec les flèches
+      kb.enabled = true;
       kb.addCapture([
         Phaser.Input.Keyboard.KeyCodes.LEFT,
         Phaser.Input.Keyboard.KeyCodes.RIGHT,
-        Phaser.Input.Keyboard.KeyCodes.UP,
-        Phaser.Input.Keyboard.KeyCodes.DOWN,
         Phaser.Input.Keyboard.KeyCodes.A,
         Phaser.Input.Keyboard.KeyCodes.D,
         Phaser.Input.Keyboard.KeyCodes.ESC,
       ]);
 
       this.keys = {
-        left: kb.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT, true),
-        right: kb.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT, true),
-        a: kb.addKey(Phaser.Input.Keyboard.KeyCodes.A, true),
-        d: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D, true),
-        esc: kb.addKey(Phaser.Input.Keyboard.KeyCodes.ESC, true),
+        left: kb.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT, false),
+        right: kb.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT, false),
+        a: kb.addKey(Phaser.Input.Keyboard.KeyCodes.A, false),
+        d: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D, false),
+        esc: kb.addKey(Phaser.Input.Keyboard.KeyCodes.ESC, false),
       };
-
-      // Écoute directe — plus fiable que JustDown seul
-      kb.on('keydown-LEFT', () => this.changeLane(-1));
-      kb.on('keydown-RIGHT', () => this.changeLane(1));
-      kb.on('keydown-A', () => this.changeLane(-1));
-      kb.on('keydown-D', () => this.changeLane(1));
-      kb.on('keydown-ESC', () => this.togglePause());
     }
 
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      const hits = this.input.hitTestPointer(p);
-      const onHud = hits.some(
-        (obj) => (obj as Phaser.GameObjects.GameObject & { isHudControl?: boolean }).isHudControl,
-      );
-      this.swipeStartX = onHud ? Number.NaN : p.x;
-    });
-    this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
-      if (!this.canControl() || Number.isNaN(this.swipeStartX)) return;
-      const dx = p.x - this.swipeStartX;
-      if (Math.abs(dx) > 40) this.changeLane(dx > 0 ? 1 : -1);
-    });
+    window.addEventListener('keydown', this.onWindowKeyDown, { passive: false });
+    this.input.on('pointerdown', this.onPointerDown);
+    this.input.on('pointerup', this.onPointerUp);
+    document.addEventListener('visibilitychange', this.onVisibility);
+  }
+
+  private cleanupInput(): void {
+    const kb = this.input.keyboard;
+    if (kb && this.keys) {
+      kb.removeCapture([
+        Phaser.Input.Keyboard.KeyCodes.LEFT,
+        Phaser.Input.Keyboard.KeyCodes.RIGHT,
+        Phaser.Input.Keyboard.KeyCodes.A,
+        Phaser.Input.Keyboard.KeyCodes.D,
+        Phaser.Input.Keyboard.KeyCodes.ESC,
+      ]);
+      kb.removeKey(this.keys.left);
+      kb.removeKey(this.keys.right);
+      kb.removeKey(this.keys.a);
+      kb.removeKey(this.keys.d);
+      kb.removeKey(this.keys.esc);
+      this.keys = null;
+    }
+    window.removeEventListener('keydown', this.onWindowKeyDown);
+    this.input.off('pointerdown', this.onFocusCanvas);
+    this.input.off('pointerdown', this.onPointerDown);
+    this.input.off('pointerup', this.onPointerUp);
+    document.removeEventListener('visibilitychange', this.onVisibility);
+  }
+
+  private pollKeyboard(): void {
+    if (!this.keys) return;
+    const { left, right, a, d, esc } = this.keys;
+    if (Phaser.Input.Keyboard.JustDown(esc)) {
+      this.togglePause();
+      return;
+    }
+    if (!this.canControl()) return;
+    if (Phaser.Input.Keyboard.JustDown(left) || Phaser.Input.Keyboard.JustDown(a)) {
+      this.changeLaneFromKey(-1);
+    } else if (Phaser.Input.Keyboard.JustDown(right) || Phaser.Input.Keyboard.JustDown(d)) {
+      this.changeLaneFromKey(1);
+    }
   }
 
   private canControl(): boolean {
     return this.playing && !this.paused && !this.gameOver && !this.won;
   }
 
+  /** Évite un double changement de voie (JustDown + listener window la même frame) */
+  private changeLaneFromKey(dir: number): void {
+    const now = performance.now();
+    if (now - this.lastLaneKeyAt < 80) return;
+    this.lastLaneKeyAt = now;
+    this.changeLane(dir);
+  }
+
   private changeLane(dir: number): void {
     if (!this.canControl()) return;
-    let next = Phaser.Math.Clamp(this.lane + dir, 0, LANES - 1);
-    // can't enter closed lane
-    if (this.closedLane !== null && next === this.closedLane && this.time.now < this.closeUntil) {
-      // try skip if possible
-      const skip = next + dir;
-      if (skip >= 0 && skip < LANES) next = skip;
-      else return;
-    }
+    const closed = this.closedLane !== null && this.closeRemaining > 0 ? this.closedLane : null;
+    const next = nextLaneIndex(this.lane, dir, closed, LANES);
     if (next === this.lane) return;
+
     this.lane = next;
-    this.targetX = LANE_X[this.lane];
-    this.tweens.add({
+    this.targetX = this.world.proj.laneScreenX(this.lane);
+
+    // Un seul tween à la fois — évite les courses lors d'entrées rapides
+    if (this.laneTween) {
+      this.laneTween.stop();
+      this.laneTween = null;
+    }
+    this.tweens.killTweensOf(this.player);
+    this.playerSprite.setAngle(dir * -14);
+    this.laneTween = this.tweens.add({
       targets: this.player,
       x: this.targetX,
       duration: CONFIG.player.laneSwitchDuration * 1000,
       ease: 'Sine.easeOut',
+      onComplete: () => {
+        this.laneTween = null;
+        this.player.x = this.targetX;
+        this.tweens.add({ targets: this.playerSprite, angle: 0, duration: 140, ease: 'Sine.easeOut' });
+      },
     });
   }
 
   private startCountdown(): void {
+    this.countdownActive = true;
     const steps = ['3', '2', '1', 'GO !'];
     let i = 0;
     const tick = () => {
+      if (this.gameOver || this.won) return;
       if (i >= steps.length) {
         this.countdownText.setAlpha(0);
+        this.countdownActive = false;
         this.playing = true;
-        // Grâce de démarrage
-        this.invincibleUntil = this.time.now + 2000;
+        this.invincibleRemaining = CONFIG.player.startInvincibility;
         return;
       }
       this.countdownText.setText(steps[i]).setAlpha(1).setScale(1.4);
@@ -528,50 +705,82 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_t: number, delta: number): void {
-    if (this.paused || this.gameOver || this.won) return;
+    this.pollKeyboard();
+
+    if (this.gameOver || this.won) return;
+    if (this.paused) return;
 
     if (!this.playing) {
-      // idle road scroll slow
-      this.scrollRoad(delta * 0.0003 * 80);
+      this.world.update(delta / 1000, 70, false);
       return;
     }
 
-    const dt = (delta / 1000) * this.worldTimeScale;
+    const dt = delta / 1000;
+    this.simTime += dt;
+
+    if (this.invincibleRemaining > 0) this.invincibleRemaining = Math.max(0, this.invincibleRemaining - dt);
+    if (this.distractionRemaining > 0) this.distractionRemaining = Math.max(0, this.distractionRemaining - dt);
+
     const eqCount = this.collected.size;
     const boost = this.hasEffect('boost');
     const slowmo = this.hasEffect('slowmo');
     this.scrollSpeed = getScrollSpeed(eqCount, boost, slowmo);
-    this.worldTimeScale = slowmo ? 1 : 1; // slowmo already in scrollSpeed; entity logic uses dt
 
-    // speed banner on tier change
     const tier = getTier(eqCount);
-    if (tier !== this.lastSpeedTier && tier >= 2 && !this.finalPhase) {
+    if (tier !== this.lastSpeedTier && tier >= 3 && !this.finalPhase) {
       this.showSpeedBanner(tier);
     }
     this.lastSpeedTier = tier;
 
-    this.scrollRoad(this.scrollSpeed * dt);
+    this.world.update(dt, this.scrollSpeed, boost);
     this.distance += (this.scrollSpeed * dt) / CONFIG.scoring.distancePerMeter;
     this.hudDist.setText(`${Math.floor(this.distance)} M`);
+    this.player.y = this.world.proj.playerY;
+
+    if (this.breathRemaining > 0) this.breathRemaining = Math.max(0, this.breathRemaining - dt);
 
     this.tickEffects(dt);
     this.tickSpawns(dt);
     this.tickEntities(dt);
-    this.tickLaneClosure();
+    this.tickLaneClosure(dt);
     this.tickDistraction();
     this.tickInvincibility();
     this.tickMagnet(dt);
     this.tickLoveDestroy();
     this.tickFinalPhase(dt);
     this.updateHudEffects();
+    this.updateDebugOverlay();
   }
 
-  private scrollRoad(amount: number): void {
-    for (const road of this.roads) {
-      road.tilePositionY -= amount * 0.15;
-      road.y += amount;
-      if (road.y > GAME_H + 32) road.y -= 16 * 64;
+  private scrollRoad(_amount: number): void {
+    /* remplacé par WorldView.update */
+  }
+
+  private layoutEntity(e: LaneEntity): void {
+    if (e.screenSpace) return;
+    const sp = e.sprite as Phaser.GameObjects.Image;
+    const z = Math.max(0, e.worldZ);
+    const p = this.world.proj.project(e.lane, z);
+    const base = e.baseScale ?? 1;
+    const fit = fitTextureScale(this, sp.texture.key);
+    sp.setPosition(p.x, p.y);
+    sp.setScale(p.scale * base * fit);
+    sp.setDepth(entityDrawDepth(e.worldZ, this.world.proj.maxZ));
+    if (e.warning) {
+      e.warning.setPosition(p.x, p.y);
+      e.warning.setScale(p.scale);
+      e.warning.setDepth(sp.depth - 1);
+      e.warning.setAlpha(0.1 + Math.sin(this.simTime * 10) * 0.08);
     }
+    if (e.label) {
+      e.label.setPosition(p.x, p.y - 28 * p.scale);
+      e.label.setScale(Math.max(0.6, p.scale));
+      e.label.setDepth(sp.depth + 1);
+    }
+  }
+
+  private spawnZ(): number {
+    return Math.min(this.world.proj.maxZ * 0.9, Math.max(140, this.scrollSpeed * CONFIG.spawn.reactionTime));
   }
 
   private hasEffect(id: string): boolean {
@@ -612,98 +821,109 @@ export class GameScene extends Phaser.Scene {
         boost: 'Boost',
         love: 'Amour',
       };
-      if (labels[e.id]) parts.push(`${labels[e.id]} ${e.remaining.toFixed(1)}s`);
+      if (labels[e.id]) parts.push(`${labels[e.id]} ${Math.ceil(e.remaining)}s`);
     }
     if (this.hasTempShield) parts.push('Bouclier');
+    if (this.invincibleRemaining > 0.15 && !this.hasEffect('love')) {
+      parts.push(`Invuln. ${this.invincibleRemaining.toFixed(1)}s`);
+    }
     this.hudEffects.setText(parts.join(' · '));
   }
 
   private tickSpawns(dt: number): void {
-    if (this.finalPhase && this.finalTimer < 2) return; // brief calm then chaos then finish
+    if (this.finalPhase && this.finalTimer < 2.5) return;
 
     const tier = getTier(this.collected.size);
-    this.spawnTimers.obstacle -= dt;
+    const breathSlow = this.breathRemaining > 0 ? 0.45 : 1;
+
+    this.spawnTimers.obstacle -= dt * breathSlow;
     this.spawnTimers.equipment -= dt;
     this.spawnTimers.bonus -= dt;
-    this.spawnTimers.attack -= dt;
+    this.spawnTimers.attack -= dt * breathSlow;
 
     if (this.spawnTimers.obstacle <= 0) {
       this.spawnObstaclePattern(tier);
-      this.spawnTimers.obstacle = CONFIG.spawn.obstacleInterval[tier] * Phaser.Math.FloatBetween(0.85, 1.15);
+      this.spawnTimers.obstacle =
+        CONFIG.spawn.obstacleInterval[tier]! * this.rng.float(0.9, 1.12);
     }
     if (this.spawnTimers.equipment <= 0 && this.collected.size < 7) {
       this.spawnEquipment();
-      this.spawnTimers.equipment = CONFIG.spawn.equipmentInterval[tier] * Phaser.Math.FloatBetween(0.9, 1.2);
+      this.spawnTimers.equipment =
+        CONFIG.spawn.equipmentInterval[tier]! * this.rng.float(0.92, 1.12);
     }
     if (this.spawnTimers.bonus <= 0) {
       this.spawnBonusOrLove();
-      this.spawnTimers.bonus = CONFIG.spawn.bonusInterval[tier] * Phaser.Math.FloatBetween(0.9, 1.3);
+      this.spawnTimers.bonus = CONFIG.spawn.bonusInterval[tier]! * this.rng.float(0.9, 1.2);
     }
-    if (this.spawnTimers.attack <= 0 && tier >= 1) {
-      this.spawnAttack(tier);
-      this.spawnTimers.attack = CONFIG.spawn.attackInterval[tier] * Phaser.Math.FloatBetween(0.85, 1.2);
+    if (this.spawnTimers.attack <= 0 && CONFIG.spawn.attackInterval[tier]! < 90) {
+      if (this.spawnAttack(tier)) {
+        this.breathRemaining = Math.max(this.breathRemaining, CONFIG.spawn.breathAfterAttack);
+      }
+      this.spawnTimers.attack =
+        CONFIG.spawn.attackInterval[tier]! * this.rng.float(0.9, 1.15);
     }
   }
 
-  /** Garantit toujours au moins une voie libre */
+  private currentOccupants(): RoadOccupant[] {
+    return this.entities
+      .filter((e) => !e.screenSpace)
+      .map((e) => ({
+        lane: Math.round(e.lane),
+        z: e.worldZ,
+        role:
+          e.kind === 'equipment' || e.kind === 'bonus' || e.kind === 'love' || e.kind === 'doute'
+            ? ('collect' as const)
+            : ('danger' as const),
+        fromBehind: e.fromBehind,
+      }));
+  }
+
+  private activeClosedLane(): number | null {
+    return this.closedLane !== null && this.closeRemaining > 0 ? this.closedLane : null;
+  }
+
+  /** Garantit toujours au moins une voie libre (filtre simple) */
   private freeLanes(blocked: number[]): number[] {
-    return [0, 1, 2].filter((l) => !blocked.includes(l) && l !== this.closedLane);
+    const closed = this.activeClosedLane();
+    return [0, 1, 2].filter((l) => !blocked.includes(l) && l !== closed);
   }
 
-  private spawnY(): number {
-    // anticipation: spawn above screen based on speed * reaction time
-    return -40 - this.scrollSpeed * CONFIG.spawn.reactionTime * 0.15;
-  }
-
-  private laneBusyNear(lane: number, y: number, gap: number = CONFIG.spawn.minGapFront): boolean {
-    return this.entities.some(
-      (e) => e.lane === lane && Math.abs((e.sprite as Phaser.GameObjects.Image).y - y) < gap,
-    );
+  private laneBusyNear(lane: number, z: number, gap: number = CONFIG.spawn.minGapFront): boolean {
+    return this.entities.some((e) => !e.screenSpace && e.lane === lane && Math.abs(e.worldZ - z) < gap);
   }
 
   private spawnObstaclePattern(tier: number): void {
-    const y = this.spawnY();
-    const roll = Math.random();
+    const z = this.spawnZ();
+    const lanes = chooseObstacleLanes(
+      tier,
+      this.lane,
+      this.activeClosedLane(),
+      this.currentOccupants(),
+      z,
+      this.scrollSpeed,
+      this.rng,
+    );
+    if (!lanes) return;
 
-    // never block all 3 lanes — and never the player's lane alone without escape
-    if (tier >= 4 && roll < 0.22) {
-      const blocked = Phaser.Utils.Array.Shuffle([0, 1, 2]).slice(0, 2);
-      const free = this.freeLanes(blocked);
-      if (free.length === 0) return;
-      for (const lane of blocked) {
-        if (!this.laneBusyNear(lane, y)) this.spawnObstacle(lane, y);
-      }
-    } else if (tier >= 2 && roll < 0.4) {
-      // Prefer not spawning on player's current lane at low tiers
-      let lane = Phaser.Math.Between(0, 2);
-      if (tier < 4 && Math.random() < 0.55) {
-        const others = [0, 1, 2].filter((l) => l !== this.lane && l !== this.closedLane);
-        if (others.length) lane = Phaser.Utils.Array.GetRandom(others);
-      }
-      if (lane !== this.closedLane && !this.laneBusyNear(lane, y)) {
-        this.spawnObstacle(lane, y, Math.random() < 0.25 && tier >= 3 ? 'truck' : 'car');
-      }
-    } else {
-      let lane = Phaser.Math.Between(0, 2);
-      if (tier < 3 && Math.random() < 0.6) {
-        const others = [0, 1, 2].filter((l) => l !== this.lane && l !== this.closedLane);
-        if (others.length) lane = Phaser.Utils.Array.GetRandom(others);
-      }
-      if (lane !== this.closedLane && !this.laneBusyNear(lane, y)) {
-        const kinds = ['car', 'barrier', 'cone', 'hole'] as const;
-        let kind: string = Phaser.Utils.Array.GetRandom([...kinds]);
-        if (tier >= 5 && Math.random() < 0.35) kind = 'barrel';
-        if (tier >= 3 && Math.random() < 0.2) kind = 'truck';
-        this.spawnObstacle(lane, y, kind);
-      }
+    for (const lane of lanes) {
+      if (this.laneBusyNear(lane, z)) continue;
+      let kind = 'car';
+      const r = this.rng.next();
+      if (tier >= 5 && r < 0.22) kind = 'barrel';
+      else if (tier >= 3 && r < 0.18) kind = 'truck';
+      else if (r < 0.35) kind = this.rng.pick(['barrier', 'cone', 'hole']);
+      this.spawnObstacle(lane, z, kind);
     }
   }
 
-  private spawnObstacle(lane: number, y: number, kind = 'car'): void {
+  private spawnObstacle(lane: number, z: number, kind = 'car'): void {
     let key = 'car';
     let entKind: EntityKind = 'obstacle';
-    if (kind === 'truck') key = 'truck';
-    else if (kind === 'barrier') key = 'barrier';
+    let baseScale = 1;
+    if (kind === 'truck') {
+      key = 'truck';
+      baseScale = 1.15;
+    } else if (kind === 'barrier') key = 'barrier';
     else if (kind === 'cone') key = 'cone';
     else if (kind === 'hole') key = 'hole';
     else if (kind === 'barrel') {
@@ -711,103 +931,105 @@ export class GameScene extends Phaser.Scene {
       entKind = 'barrel';
     }
 
-    const sprite = this.add.image(LANE_X[lane], y, key).setDepth(15);
-    const ent: LaneEntity = { sprite, lane, kind: entKind, hit: false };
+    const sprite = this.add.image(0, 0, textureKey(key, this));
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: entKind, hit: false, baseScale };
     if (entKind === 'barrel') {
       ent.fuse = CONFIG.barrel.fuseDuration;
       ent.fuseMax = CONFIG.barrel.fuseDuration;
       ent.warning = this.add
-        .circle(LANE_X[lane], y, CONFIG.barrel.blastRadius, 0xff1744, 0.12)
-        .setStrokeStyle(2, 0xffeb3b, 0.7)
-        .setDepth(14);
+        .circle(0, 0, CONFIG.barrel.blastRadius, 0xff1744, 0.12)
+        .setStrokeStyle(2, 0xffeb3b, 0.7);
       ent.label = this.add
-        .text(LANE_X[lane], y - 36, `${ent.fuse!.toFixed(1)}`, {
+        .text(0, 0, `${ent.fuse!.toFixed(1)}`, {
           fontFamily: 'Orbitron',
           fontSize: '12px',
           color: '#ffeb3b',
         })
-        .setOrigin(0.5)
-        .setDepth(16);
+        .setOrigin(0.5);
     }
+    this.layoutEntity(ent);
     this.entities.push(ent);
   }
 
   private spawnEquipment(): void {
-    const missing = EQUIPMENTS.filter((e) => !this.collected.has(e.id));
-    if (missing.length === 0) return;
-    // prefer missing; allow duplicates of missing only — duplicates of collected can spawn but won't count
-    // Brief: missed must reappear; duplicates don't increase counter
-    const pool = missing.length > 0 ? missing : [...EQUIPMENTS];
-    // weight missing higher
-    const pick =
-      Math.random() < 0.85 || missing.length === 0
-        ? Phaser.Utils.Array.GetRandom(missing.length ? missing : pool)
-        : Phaser.Utils.Array.GetRandom([...EQUIPMENTS]);
+    const id = pickEquipmentId(this.collected, this.rng);
+    if (!id) return;
 
-    const free = this.freeLanes([]);
-    if (!free.length) return;
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const y = this.spawnY() - 40;
-    if (this.laneBusyNear(lane, y, 100)) return;
+    const z = this.spawnZ() + 40;
+    const lane = pickSafeCollectLane({
+      playerLane: this.lane,
+      closedLane: this.activeClosedLane(),
+      existing: this.currentOccupants(),
+      bandZ: z,
+      scrollSpeed: this.scrollSpeed,
+      switchDuration: CONFIG.player.laneSwitchDuration,
+      reactionTime: CONFIG.spawn.reactionTime,
+      safetyBand: CONFIG.spawn.safetyBand,
+      rng: this.rng,
+    });
+    if (lane === null) return;
+    if (this.laneBusyNear(lane, z, 110)) return;
 
-    const sprite = this.add.image(LANE_X[lane], y, `eq-${pick.id}`).setDepth(16);
-    this.tweens.add({
-      targets: sprite,
-      scale: 1.12,
-      duration: 500,
-      yoyo: true,
-      repeat: -1,
-    });
-    this.entities.push({
-      sprite,
-      lane,
-      kind: 'equipment',
-      equipmentId: pick.id,
-      hit: false,
-    });
+    const sprite = this.add.image(0, 0, textureKey(`eq-${id}`, this));
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'equipment', equipmentId: id, hit: false };
+    this.layoutEntity(ent);
+    this.entities.push(ent);
   }
 
   private spawnBonusOrLove(): void {
-    const free = this.freeLanes([]);
-    if (!free.length) return;
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const y = this.spawnY() - 20;
-    if (this.laneBusyNear(lane, y, 100)) return;
+    const z = this.spawnZ() + 28;
+    const lane = pickSafeCollectLane({
+      playerLane: this.lane,
+      closedLane: this.activeClosedLane(),
+      existing: this.currentOccupants(),
+      bandZ: z,
+      scrollSpeed: this.scrollSpeed,
+      switchDuration: CONFIG.player.laneSwitchDuration,
+      reactionTime: CONFIG.spawn.reactionTime,
+      safetyBand: CONFIG.spawn.safetyBand,
+      rng: this.rng,
+    });
+    if (lane === null) return;
+    if (this.laneBusyNear(lane, z, 110)) return;
 
-    if (Math.random() < CONFIG.spawn.loveChance && !this.hasEffect('love')) {
-      const sprite = this.add.image(LANE_X[lane], y, 'love').setDepth(16);
-      this.tweens.add({ targets: sprite, scale: 1.2, duration: 400, yoyo: true, repeat: -1 });
-      this.entities.push({ sprite, lane, kind: 'love', hit: false });
+    if (this.rng.chance(CONFIG.spawn.loveChance) && !this.hasEffect('love')) {
+      const sprite = this.add.image(0, 0, textureKey('love', this));
+      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'love', hit: false };
+      this.layoutEntity(ent);
+      this.entities.push(ent);
       return;
     }
 
-    const bonus = Phaser.Utils.Array.GetRandom([...BONUSES]);
-    // skip life if full
+    let bonus = this.rng.pick([...BONUSES]);
     if (bonus.id === 'life' && this.lives >= CONFIG.player.maxLives) {
-      const alt = BONUSES.filter((b) => b.id !== 'life');
-      const b2 = Phaser.Utils.Array.GetRandom(alt);
-      const sprite = this.add.image(LANE_X[lane], y, `bonus-${b2.id}`).setDepth(16);
-      this.entities.push({ sprite, lane, kind: 'bonus', bonusId: b2.id, hit: false });
-      return;
+      bonus = this.rng.pick(BONUSES.filter((b) => b.id !== 'life'));
     }
-    const sprite = this.add.image(LANE_X[lane], y, `bonus-${bonus.id}`).setDepth(16);
-    this.entities.push({ sprite, lane, kind: 'bonus', bonusId: bonus.id, hit: false });
+    if (bonus.id === 'boost' && this.hasEffect('slowmo')) {
+      bonus = this.rng.pick(BONUSES.filter((b) => b.id !== 'boost'));
+    }
+    const sprite = this.add.image(0, 0, textureKey(`bonus-${bonus.id}`, this));
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'bonus', bonusId: bonus.id, hit: false };
+    this.layoutEntity(ent);
+    this.entities.push(ent);
   }
 
-  private spawnAttack(tier: number): void {
-    const types = ['depression', 'calomnie', 'colere', 'peur', 'doute', 'reject', 'distraction'] as const;
-    let pool = [...types];
-    if (tier < 3) pool = ['depression', 'doute', 'calomnie'];
-    else if (tier < 5) pool = ['depression', 'calomnie', 'colere', 'peur', 'doute'];
-    else if (tier >= 6) pool = [...types];
+  /** @returns true si une attaque a été lancée */
+  private spawnAttack(tier: number): boolean {
+    const elapsed = this.simTime;
+    const unlocked: AttackFamily[] = (Object.keys(CONFIG.attackUnlock) as AttackFamily[]).filter((f) =>
+      isAttackUnlocked(f, tier, elapsed),
+    );
+    if (!unlocked.length) return false;
 
-    // from behind chance
-    if (tier >= 4 && Math.random() < 0.2) {
+    if (unlocked.includes('fromBehind') && this.rng.chance(0.18)) {
       this.spawnFromBehind();
-      return;
+      return true;
     }
 
-    const type = Phaser.Utils.Array.GetRandom(pool);
+    const pool = unlocked.filter((f) => f !== 'fromBehind');
+    if (!pool.length) return false;
+    const type = this.rng.pick(pool);
+
     switch (type) {
       case 'depression':
         this.spawnDepression();
@@ -830,55 +1052,114 @@ export class GameScene extends Phaser.Scene {
       case 'distraction':
         this.triggerDistraction();
         break;
+      default:
+        return false;
     }
+    return true;
+  }
+
+  private showDirectionalWarn(
+    x: number,
+    y: number,
+    label: string,
+    color: string,
+    side?: 'left' | 'right' | 'behind',
+  ): void {
+    const markers: Phaser.GameObjects.GameObject[] = [];
+    const t = this.add
+      .text(x, y, label, {
+        fontFamily: 'Orbitron',
+        fontSize: '14px',
+        color,
+        stroke: '#000',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(DEPTH.fx + 2);
+    markers.push(t);
+    if (side === 'left') {
+      markers.push(this.add.triangle(28, y, 0, 10, 18, 0, 18, 20, 0xea80fc, 0.9).setDepth(DEPTH.fx + 2));
+    } else if (side === 'right') {
+      markers.push(
+        this.add.triangle(GAME_W - 28, y, 18, 10, 0, 0, 0, 20, 0xea80fc, 0.9).setDepth(DEPTH.fx + 2),
+      );
+    } else if (side === 'behind') {
+      markers.push(this.add.triangle(x, GAME_H - 100, 10, 0, 0, 16, 20, 16, 0xff5252, 0.95).setDepth(DEPTH.fx + 2));
+    }
+    this.tweens.add({
+      targets: markers,
+      alpha: 0,
+      duration: 1000,
+      onComplete: () => markers.forEach((m) => m.destroy()),
+    });
   }
 
   private spawnDepression(): void {
     const free = this.freeLanes([]);
     if (free.length < 1) return;
-    // dark mass covering one lane, slow
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const y = this.spawnY();
-    const sprite = this.add.image(LANE_X[lane], y, 'depression').setDepth(14).setAlpha(0.9);
-    this.showToast('DÉPRESSION', '#7e57c2');
-    this.entities.push({ sprite, lane, kind: 'depression', hit: false });
+    const z = this.spawnZ();
+    const lanes = chooseObstacleLanes(
+      getTier(this.collected.size),
+      this.lane,
+      this.activeClosedLane(),
+      this.currentOccupants(),
+      z,
+      this.scrollSpeed,
+      this.rng,
+    );
+    const lane = lanes?.[0] ?? this.rng.pick(free);
+    const sprite = this.add.image(0, 0, textureKey('depression', this)).setAlpha(0.92);
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'depression', hit: false, baseScale: 1.1 };
+    this.layoutEntity(ent);
+    const p = this.world.proj.project(lane, Math.min(z, 160));
+    this.showDirectionalWarn(p.x, p.y, 'DÉPRESSION', '#ce93d8');
+    this.entities.push(ent);
   }
 
   private spawnCalomnie(): void {
-    // side attackers shoot projectiles across
-    const fromLeft = Math.random() < 0.5;
-    const y = GAME_H * Phaser.Math.FloatBetween(0.25, 0.55);
+    const fromLeft = this.rng.chance(0.5);
+    const y = GAME_H * this.rng.float(0.38, 0.52);
     const sx = fromLeft ? -30 : GAME_W + 30;
-    const attacker = this.add.image(sx, y, 'calomnie').setDepth(18);
-    this.showToast('CALOMNIE', '#ea80fc');
+    const attacker = this.add.image(sx, y, textureKey('calomnie', this)).setDepth(DEPTH.fx);
+    this.showDirectionalWarn(
+      fromLeft ? 56 : GAME_W - 56,
+      y,
+      'CALOMNIE',
+      '#ea80fc',
+      fromLeft ? 'left' : 'right',
+    );
+    const scaleNow = () => getThreatTimeScale(this.hasEffect('slowmo'));
     this.tweens.add({
       targets: attacker,
-      x: fromLeft ? 30 : GAME_W - 30,
-      duration: 400,
+      x: fromLeft ? 36 : GAME_W - 36,
+      duration: 500 / scaleNow(),
       onComplete: () => {
-        // fire 3 projectiles toward player lanes
         for (let i = 0; i < 3; i++) {
-          this.time.delayedCall(i * 280, () => {
+          this.time.delayedCall((i * 320) / scaleNow(), () => {
             if (!this.playing || this.paused) return;
-            const proj = this.add.image(attacker.x, attacker.y, 'projectile').setDepth(18);
-            const targetLane = Phaser.Math.Between(0, 2);
-            const vx = fromLeft ? 220 : -220;
+            const proj = this.add
+              .image(attacker.x, attacker.y, textureKey('projectile', this))
+              .setDepth(DEPTH.fx);
+            const targetLane = this.rng.int(0, 2);
+            const vx = (fromLeft ? 180 : -180) * scaleNow();
             this.entities.push({
               sprite: proj,
               lane: targetLane,
+              worldZ: 0,
               kind: 'projectile',
               hit: false,
               vx,
+              screenSpace: true,
             });
-            // also drift toward lane
             this.tweens.add({
               targets: proj,
-              y: this.player.y - 20 + Phaser.Math.Between(-30, 30),
-              duration: 900,
+              y: this.player.y - 10 + this.rng.float(-20, 20),
+              x: this.world.proj.laneScreenX(targetLane),
+              duration: 950 / scaleNow(),
             });
           });
         }
-        this.time.delayedCall(1200, () => {
+        this.time.delayedCall(1400 / scaleNow(), () => {
           this.tweens.add({
             targets: attacker,
             x: fromLeft ? -40 : GAME_W + 40,
@@ -893,69 +1174,106 @@ export class GameScene extends Phaser.Scene {
   private spawnColere(): void {
     const free = this.freeLanes([]);
     if (!free.length) return;
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const y = this.spawnY();
-    const sprite = this.add.image(LANE_X[lane], y, 'colere').setDepth(15);
-    this.showToast('COLÈRE', '#ff3d00');
-    this.entities.push({ sprite, lane, kind: 'colere', hit: false, fuse: 1.8, fuseMax: 1.8 });
+    const z = this.spawnZ();
+    const dangerLane =
+      chooseObstacleLanes(
+        getTier(this.collected.size),
+        this.lane,
+        this.activeClosedLane(),
+        this.currentOccupants(),
+        z,
+        this.scrollSpeed,
+        this.rng,
+      )?.[0] ?? this.rng.pick(free);
+    const sprite = this.add.image(0, 0, textureKey('colere', this));
+    const ent: LaneEntity = {
+      sprite,
+      lane: dangerLane,
+      worldZ: z,
+      kind: 'colere',
+      hit: false,
+      fuse: 2.2,
+      fuseMax: 2.2,
+    };
+    this.layoutEntity(ent);
+    const p = this.world.proj.project(dangerLane, Math.min(z, 150));
+    this.showDirectionalWarn(p.x, p.y, 'COLÈRE', '#ff6e40');
+    this.entities.push(ent);
   }
 
   private spawnPeur(): void {
     const free = this.freeLanes([]);
     if (!free.length) return;
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const y = this.player.y - 180;
-    // warning first
+    const lane = this.rng.pick(free);
+    const z = 130;
+    const p = this.world.proj.project(lane, z);
     const warn = this.add
-      .text(LANE_X[lane], y, '⚠', {
-        fontSize: '28px',
-        color: '#ffeb3b',
-      })
+      .text(p.x, p.y, '⚠ PEUR', { fontSize: '16px', color: '#ffeb3b', fontFamily: 'Orbitron' })
       .setOrigin(0.5)
-      .setDepth(30);
-    this.showToast('PEUR', '#b388ff');
-    this.tweens.add({
-      targets: warn,
-      alpha: 0.3,
-      duration: 200,
-      yoyo: true,
-      repeat: 3,
-    });
+      .setDepth(DEPTH.fx);
+    this.tweens.add({ targets: warn, alpha: 0.35, duration: 220, yoyo: true, repeat: 4 });
     this.time.delayedCall(CONFIG.fear.warningDuration * 1000, () => {
       warn.destroy();
-      if (!this.playing) return;
-      const sprite = this.add.image(LANE_X[lane], y, 'peur').setDepth(17);
-      this.entities.push({ sprite, lane, kind: 'peur', hit: false, life: 2.5 });
+      if (!this.scene.isActive('Game') || !this.playing) return;
+      const sprite = this.add.image(0, 0, textureKey('peur', this));
+      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'peur', hit: false, life: 2.5 };
+      this.layoutEntity(ent);
+      this.entities.push(ent);
     });
   }
 
   private spawnDoute(): void {
-    const free = this.freeLanes([]);
-    if (!free.length) return;
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const y = this.spawnY();
-    const sprite = this.add.image(LANE_X[lane], y, 'doute').setDepth(16).setAlpha(0.85);
-    this.entities.push({ sprite, lane, kind: 'doute', hit: false, isDoubt: true });
+    const z = this.spawnZ();
+    const lane = pickSafeCollectLane({
+      playerLane: this.lane,
+      closedLane: this.activeClosedLane(),
+      existing: this.currentOccupants(),
+      bandZ: z,
+      scrollSpeed: this.scrollSpeed,
+      switchDuration: CONFIG.player.laneSwitchDuration,
+      reactionTime: CONFIG.spawn.reactionTime,
+      safetyBand: CONFIG.spawn.safetyBand,
+      rng: this.rng,
+    });
+    if (lane === null) return;
+    const sprite = this.add.image(0, 0, textureKey('doute', this)).setAlpha(0.85);
+    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'doute', hit: false, isDoubt: true };
+    this.layoutEntity(ent);
+    this.entities.push(ent);
   }
 
   private spawnReject(): void {
     if (this.closedLane !== null) return;
-    // close a side lane, never center if player is cornered badly — prefer not player's lane if only one free
-    const candidates = [0, 2, 1].filter((l) => l !== this.lane);
-    const lane: number = candidates[0] ?? 0;
+    const candidates = [0, 1, 2].filter((l) => l !== this.lane);
+    const lane: number = this.rng.pick(candidates.length ? candidates : [0, 2]);
     this.closedLane = lane;
-    this.closeWarnUntil = this.time.now + CONFIG.laneClosure.warningDuration * 1000;
-    this.closeUntil = this.time.now + (CONFIG.laneClosure.warningDuration + CONFIG.laneClosure.duration) * 1000;
-    this.showToast('REJET — voie fermée', '#ff1744');
+    this.closeWarningRemaining = CONFIG.laneClosure.warningDuration;
+    this.closeRemaining = CONFIG.laneClosure.warningDuration + CONFIG.laneClosure.duration;
 
-    const warn = this.add
-      .rectangle(LANE_X[lane], GAME_H / 2, 70, GAME_H, 0xff1744, 0.15)
-      .setDepth(12)
+    this.closeWarnRect?.destroy();
+    const laneHalf = this.world.proj.laneSpacingAt(0) * 0.9;
+    this.closeWarnRect = this.add
+      .rectangle(
+        this.world.proj.laneScreenX(lane),
+        (this.world.proj.horizonY + GAME_H) / 2,
+        laneHalf,
+        GAME_H * 0.55,
+        0xff1744,
+        0.15,
+      )
+      .setDepth(DEPTH.entityBase + 5)
       .setStrokeStyle(2, 0xff1744, 0.8);
-    this.tweens.add({ targets: warn, alpha: 0.05, duration: 300, yoyo: true, repeat: 2 });
+    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), GAME_H * 0.45, 'REJET', '#ff1744');
+    this.tweens.add({ targets: this.closeWarnRect, alpha: 0.05, duration: 300, yoyo: true, repeat: 3 });
+
     this.time.delayedCall(CONFIG.laneClosure.warningDuration * 1000, () => {
-      warn.destroy();
-      this.closeBarrier = this.add.image(LANE_X[lane], this.player.y - 100, 'reject').setDepth(16);
+      if (!this.scene.isActive('Game')) return;
+      this.closeWarnRect?.destroy();
+      this.closeWarnRect = null;
+      this.closeBarrier?.destroy();
+      this.closeBarrier = this.add.image(0, 0, textureKey('reject', this)).setDepth(DEPTH.entityBase + 20);
+      const p = this.world.proj.project(lane, 70);
+      this.closeBarrier.setPosition(p.x, p.y).setScale(p.scale * 1.2);
       if (this.lane === lane) this.changeLane(lane === 0 ? 1 : -1);
     });
   }
@@ -963,93 +1281,94 @@ export class GameScene extends Phaser.Scene {
   private spawnFromBehind(): void {
     const free = this.freeLanes([]);
     if (!free.length) return;
-    const lane = Phaser.Utils.Array.GetRandom(free);
-    const sprite = this.add.image(LANE_X[lane], GAME_H + 40, 'car').setDepth(15).setTint(0xff5252);
-    this.showToast('Attaque arrière !', '#ff5252');
-    this.entities.push({
+    const away = free.filter((l) => l !== this.lane);
+    const lane = this.rng.pick(away.length ? away : free);
+    const sprite = this.add.image(0, 0, textureKey('car', this)).setTint(0xff5252);
+    const ent: LaneEntity = {
       sprite,
       lane,
+      worldZ: -35,
       kind: 'obstacle',
       hit: false,
       fromBehind: true,
       life: 3.5,
-    });
+      baseScale: 1.05,
+    };
+    this.layoutEntity(ent);
+    this.entities.push(ent);
+    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), GAME_H - 120, 'ARRIÈRE', '#ff5252', 'behind');
   }
 
   private triggerDistraction(): void {
-    this.distractionUntil = this.time.now + CONFIG.distraction.duration * 1000;
+    this.distractionRemaining = CONFIG.distraction.duration;
     this.showToast('DISTRACTION', '#00e5ff');
     this.distractionOverlay.setFillStyle(0x00e5ff, 0.08);
   }
 
   private tickDistraction(): void {
-    if (this.time.now < this.distractionUntil) {
-      this.cameras.main.setAngle(Math.sin(this.time.now / 80) * 0.6);
-      this.distractionOverlay.setAlpha(0.06 + Math.sin(this.time.now / 100) * 0.04);
+    if (this.distractionRemaining > 0) {
+      this.cameras.main.setAngle(Math.sin(this.simTime * 12) * 0.6);
+      this.distractionOverlay.setAlpha(0.06 + Math.sin(this.simTime * 10) * 0.04);
     } else {
       this.cameras.main.setAngle(0);
       this.distractionOverlay.setAlpha(0);
     }
   }
 
-  private tickLaneClosure(): void {
+  private tickLaneClosure(dt: number): void {
     if (this.closedLane === null) return;
-    if (this.closeBarrier) {
-      this.closeBarrier.y = this.player.y - 80;
+    this.closeRemaining = Math.max(0, this.closeRemaining - dt);
+    this.closeWarningRemaining = Math.max(0, this.closeWarningRemaining - dt);
+    if (this.closeBarrier && this.closedLane !== null) {
+      const p = this.world.proj.project(this.closedLane, 70);
+      this.closeBarrier.setPosition(p.x, p.y).setScale(p.scale * 1.2);
     }
-    if (this.time.now >= this.closeUntil) {
+    if (this.closeRemaining <= 0) {
       this.closedLane = null;
       this.closeBarrier?.destroy();
       this.closeBarrier = null;
+      this.closeWarnRect?.destroy();
+      this.closeWarnRect = null;
     }
   }
 
   private tickEntities(dt: number): void {
-    const py = this.player.y;
     const px = this.player.x;
+    const py = this.player.y;
 
     for (let i = this.entities.length - 1; i >= 0; i--) {
       const e = this.entities[i];
       const sp = e.sprite as Phaser.GameObjects.Image;
 
-      if (e.fromBehind) {
-        sp.y -= (this.scrollSpeed * 0.55 + 80) * dt;
+      if (e.screenSpace || e.kind === 'projectile') {
+        if (e.kind === 'projectile') {
+          sp.x += (e.vx ?? 0) * dt;
+        }
+      } else if (e.fromBehind) {
+        e.worldZ += (this.scrollSpeed * 0.55 + 70) * dt;
         e.life = (e.life ?? 3) - dt;
-      } else if (e.kind === 'projectile') {
-        sp.x += (e.vx ?? 0) * dt;
-        sp.y += this.scrollSpeed * 0.15 * dt;
+        this.layoutEntity(e);
       } else if (e.kind === 'peur') {
-        // chases player lane slowly
-        const tx = LANE_X[this.lane];
-        sp.x = Phaser.Math.Linear(sp.x, tx, 2 * dt);
-        sp.y += this.scrollSpeed * 0.4 * dt;
+        e.worldZ -= this.scrollSpeed * 0.45 * dt;
+        if (e.lane < this.lane && Math.random() < dt * 2) e.lane++;
+        if (e.lane > this.lane && Math.random() < dt * 2) e.lane--;
         e.life = (e.life ?? 2) - dt;
+        this.layoutEntity(e);
       } else {
-        sp.y += this.scrollSpeed * dt;
+        e.worldZ -= this.scrollSpeed * dt;
+        this.layoutEntity(e);
       }
 
-      if (e.warning) {
-        e.warning.x = sp.x;
-        e.warning.y = sp.y;
-        e.warning.setAlpha(0.1 + Math.sin(this.time.now / 100) * 0.08);
-      }
-      if (e.label) {
-        e.label.x = sp.x;
-        e.label.y = sp.y - 36;
-      }
-
-      // barrel fuse
       if (e.kind === 'barrel' && e.fuse !== undefined) {
         e.fuse -= dt;
         e.label?.setText(Math.max(0, e.fuse).toFixed(1));
         if (e.fuse <= 0) {
-          this.explodeAt(sp.x, sp.y, CONFIG.barrel.blastRadius);
+          this.explodeAt(sp.x, sp.y, CONFIG.barrel.blastRadius * (sp.scaleX || 1));
           this.destroyEntity(i);
           continue;
         }
       }
 
-      // colere becomes fire zone
       if (e.kind === 'colere' && e.fuse !== undefined) {
         e.fuse -= dt;
         if (e.fuse <= 0) {
@@ -1067,7 +1386,7 @@ export class GameScene extends Phaser.Scene {
         }
       }
 
-      if (e.life !== undefined && e.life <= 0 && e.kind === 'peur') {
+      if (e.kind === 'peur' && (e.life ?? 0) <= 0) {
         this.destroyEntity(i);
         continue;
       }
@@ -1077,27 +1396,30 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
 
-      // off screen
-      if (sp.y > GAME_H + 80 || sp.y < -200 || sp.x < -80 || sp.x > GAME_W + 80) {
-        if (e.kind === 'obstacle' || e.kind === 'depression' || e.kind === 'barrel') {
-          this.obstaclesAvoided++;
-        }
+      // hors champ logique
+      if (!e.screenSpace && (e.worldZ < -40 || e.worldZ > this.world.proj.maxZ + 40)) {
+        if (e.kind === 'obstacle' || e.kind === 'depression' || e.kind === 'barrel') this.obstaclesAvoided++;
+        this.destroyEntity(i);
+        continue;
+      }
+      if (e.screenSpace && (sp.x < -80 || sp.x > GAME_W + 80 || sp.y > GAME_H + 80)) {
         this.destroyEntity(i);
         continue;
       }
 
-      // collision
       if (e.hit) continue;
-      const hw = CONFIG.player.hitboxW * 0.45;
-      const hh = CONFIG.player.hitboxH * 0.4;
-      const dx = Math.abs(sp.x - px);
-      const dy = Math.abs(sp.y - py);
-      const reachX = sp.displayWidth * 0.28 + hw;
-      const reachY = sp.displayHeight * 0.28 + hh;
 
-      if (dx < reachX && dy < reachY) {
-        this.handlePickupOrHit(e, i);
+      // Collisions logiques (voie + profondeur) pour le monde ; écran pour projectiles
+      let hit = false;
+      if (e.screenSpace || e.kind === 'projectile') {
+        const hw = CONFIG.player.hitboxW * 0.4;
+        const hh = CONFIG.player.hitboxH * 0.35;
+        hit = Math.abs(sp.x - px) < hw + sp.displayWidth * 0.25 && Math.abs(sp.y - py) < hh + sp.displayHeight * 0.25;
+      } else {
+        hit = this.world.proj.overlapsPlayer(Math.round(e.lane), e.worldZ, this.lane, { zHit: 30 });
       }
+
+      if (hit) this.handlePickupOrHit(e, i);
     }
   }
 
@@ -1148,13 +1470,14 @@ export class GameScene extends Phaser.Scene {
     if (isNew) {
       this.collected.add(id);
       const idx = EQUIPMENTS.findIndex((e) => e.id === id);
-      this.hudEqIcons[idx].setAlpha(1);
+      this.hudEqIcons[idx].setAlpha(1).clearTint().setScale(1.15);
+      this.tweens.add({ targets: this.hudEqIcons[idx], scale: 1, duration: 220 });
       this.hudEqText.setText(`Équipements : ${this.collected.size}/7`);
     }
     audio.collect();
     this.vibrate(40);
     this.burst(x, y, eq.color);
-    this.flashScreen(eq.color, 0.25);
+    this.flashScreen(eq.color, 0.14);
     this.showToast(isNew ? eq.name : `${eq.short} (déjà équipée)`, '#ffd54f');
 
     if (isNew && this.collected.size === 7) {
@@ -1194,7 +1517,7 @@ export class GameScene extends Phaser.Scene {
     this.vibrate(60);
     this.addEffect('love', CONFIG.effects.loveDuration);
     this.burst(x, y, 0xff2d95);
-    this.flashScreen(0xff80ab, 0.4);
+    this.flashScreen(0xff80ab, 0.2);
     this.showToast("AMOUR — aucune attaque ne peut te toucher !", '#ff80ab');
     // wave
     const wave = this.add.circle(this.player.x, this.player.y, 20, 0xff80ab, 0.3).setDepth(25);
@@ -1208,7 +1531,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private takeHit(x: number, y: number): void {
-    if (this.time.now < this.invincibleUntil) return;
+    if (this.invincibleRemaining > 0) return;
     if (this.hasEffect('love')) return;
     if (this.hasEffect('boost') && CONFIG.effects.boostProtects) return;
 
@@ -1217,7 +1540,7 @@ export class GameScene extends Phaser.Scene {
       this.showToast('Bouclier brisé !', '#69f0ae');
       audio.ui();
       this.burst(x, y, 0x69f0ae);
-      this.invincibleUntil = this.time.now + 500;
+      this.invincibleRemaining = 0.5;
       return;
     }
 
@@ -1225,9 +1548,9 @@ export class GameScene extends Phaser.Scene {
     this.refreshHearts();
     audio.hit();
     this.vibrate(80);
-    this.flashScreen(0xff1744, 0.35);
+    this.flashScreen(0xff1744, 0.18);
     this.cameras.main.shake(180, 0.01);
-    this.invincibleUntil = this.time.now + CONFIG.player.invincibilityDuration * 1000;
+    this.invincibleRemaining = CONFIG.player.invincibilityDuration;
     this.showToast('Touchée !', '#ff5252');
 
     if (this.lives <= 0) {
@@ -1236,45 +1559,77 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tickInvincibility(): void {
-    if (this.time.now < this.invincibleUntil) {
-      this.playerSprite.setAlpha(0.35 + Math.sin(this.time.now / 50) * 0.35);
+    if (this.invincibleRemaining > 0) {
+      const pulse = 0.4 + Math.sin(this.simTime * 18) * 0.35;
+      this.playerSprite.setAlpha(pulse);
+      this.inviRing.setStrokeStyle(3, 0x00e5ff, 0.55 + Math.sin(this.simTime * 14) * 0.35);
+      this.inviRing.setFillStyle(0x00e5ff, 0.08);
+      this.inviRing.setScale(1 + Math.sin(this.simTime * 10) * 0.06);
     } else {
       this.playerSprite.setAlpha(1);
+      this.inviRing.setStrokeStyle(3, 0x00e5ff, 0);
+      this.inviRing.setFillStyle(0x00e5ff, 0);
+      this.inviRing.setScale(1);
     }
   }
 
+  private createDebugOverlay(): void {
+    this.debugText = this.add
+      .text(8, GAME_H - 72, '', {
+        fontFamily: 'monospace',
+        fontSize: '10px',
+        color: '#69f0ae',
+        backgroundColor: '#00000099',
+        padding: { x: 4, y: 3 },
+      })
+      .setDepth(DEPTH.hud + 80)
+      .setScrollFactor(0);
+  }
+
+  private updateDebugOverlay(): void {
+    if (!this.debugMode || !this.debugText) return;
+    const tier = getTier(this.collected.size);
+    this.debugText.setText(
+      [
+        `DBG seed=${this.runSeed ?? 'rand'} t=${this.simTime.toFixed(1)}s`,
+        `tier=${tier} spd=${this.scrollSpeed.toFixed(0)} eq=${this.collected.size}/7`,
+        `lane=${this.lane} closed=${this.activeClosedLane() ?? '-'} breath=${this.breathRemaining.toFixed(1)}`,
+        `enti=${this.entities.length} invi=${this.invincibleRemaining.toFixed(1)}`,
+      ].join('\n'),
+    );
+  }
+
+
   private tickMagnet(dt: number): void {
     if (!this.hasEffect('magnet')) return;
-    const r = CONFIG.effects.magnetRadius;
+    const pull = CONFIG.effects.magnetPull * dt;
     for (const e of this.entities) {
       if (e.kind !== 'equipment' && e.kind !== 'bonus' && e.kind !== 'love') continue;
-      const sp = e.sprite as Phaser.GameObjects.Image;
-      const dx = this.player.x - sp.x;
-      const dy = this.player.y - sp.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < r && dist > 1) {
-        const pull = CONFIG.effects.magnetPull * dt;
-        sp.x += (dx / dist) * pull;
-        sp.y += (dy / dist) * pull;
+      if (e.screenSpace) continue;
+      // attire en profondeur et vers la voie du joueur
+      if (e.worldZ > 15) e.worldZ = Math.max(15, e.worldZ - pull * 0.35);
+      if (e.lane !== this.lane && Math.random() < dt * 3) {
+        e.lane += e.lane < this.lane ? 1 : -1;
       }
+      this.layoutEntity(e);
     }
   }
 
   private tickLoveDestroy(): void {
     if (!this.hasEffect('love')) return;
-    const r = CONFIG.effects.loveDestroyRadius;
     for (let i = this.entities.length - 1; i >= 0; i--) {
       const e = this.entities[i];
-      if (
-        e.kind === 'equipment' ||
-        e.kind === 'bonus' ||
-        e.kind === 'love' ||
-        e.kind === 'doute'
-      )
+      if (e.kind === 'equipment' || e.kind === 'bonus' || e.kind === 'love' || e.kind === 'doute') continue;
+      if (e.screenSpace) {
+        const sp = e.sprite as Phaser.GameObjects.Image;
+        if (Math.hypot(sp.x - this.player.x, sp.y - this.player.y) < CONFIG.effects.loveDestroyRadius) {
+          this.burst(sp.x, sp.y, 0xff80ab);
+          this.destroyEntity(i);
+        }
         continue;
-      const sp = e.sprite as Phaser.GameObjects.Image;
-      if (Math.hypot(sp.x - this.player.x, sp.y - this.player.y) < r) {
-        this.burst(sp.x, sp.y, 0xff80ab);
+      }
+      if (e.worldZ < 90 && Math.abs(e.lane - this.lane) <= 1) {
+        this.burst((e.sprite as Phaser.GameObjects.Image).x, (e.sprite as Phaser.GameObjects.Image).y, 0xff80ab);
         this.destroyEntity(i);
       }
     }
@@ -1282,15 +1637,20 @@ export class GameScene extends Phaser.Scene {
 
   private explodeAt(x: number, y: number, radius: number): void {
     this.burst(x, y, 0xff3d00);
-    this.flashScreen(0xff6e40, 0.3);
-    const fire = this.add.image(x, y, 'colere').setDepth(16).setScale(1.4);
-    this.entities.push({
+    this.flashScreen(0xff6e40, 0.16);
+    const lane = this.nearestLane(x);
+    const fire = this.add.image(0, 0, textureKey('colere', this));
+    const ent: LaneEntity = {
       sprite: fire,
-      lane: this.nearestLane(x),
+      lane,
+      worldZ: 18,
       kind: 'firezone',
       hit: false,
       life: 1.5,
-    });
+      baseScale: 1.3,
+    };
+    this.layoutEntity(ent);
+    this.entities.push(ent);
     if (Math.hypot(x - this.player.x, y - this.player.y) < radius) {
       this.takeHit(x, y);
     }
@@ -1299,13 +1659,14 @@ export class GameScene extends Phaser.Scene {
   private nearestLane(x: number): number {
     let best = 0;
     let d = Infinity;
-    LANE_X.forEach((lx, i) => {
+    for (let i = 0; i < LANES; i++) {
+      const lx = this.world.proj.laneScreenX(i);
       const dd = Math.abs(lx - x);
       if (dd < d) {
         d = dd;
         best = i;
       }
-    });
+    }
     return best;
   }
 
@@ -1319,8 +1680,7 @@ export class GameScene extends Phaser.Scene {
   private tickFinalPhase(dt: number): void {
     if (!this.finalPhase) return;
     this.finalTimer -= dt;
-    // motion feel
-    this.cameras.main.setAngle(Math.sin(this.time.now / 60) * 0.3);
+    this.cameras.main.setAngle(Math.sin(this.simTime * 10) * 0.3);
     if (this.finalTimer <= 0) {
       this.endGame(true);
     }
@@ -1328,8 +1688,13 @@ export class GameScene extends Phaser.Scene {
 
   private endGame(won: boolean): void {
     this.playing = false;
+    this.countdownActive = false;
     this.won = won;
     this.gameOver = !won;
+    this.time.paused = false;
+    this.paused = false;
+    this.pauseOverlay?.setVisible(false);
+    this.setPauseMenuInteractive(false);
     this.cameras.main.setAngle(0);
 
     Storage.addScore({
@@ -1391,9 +1756,9 @@ export class GameScene extends Phaser.Scene {
 
   private flashScreen(color: number, alpha: number): void {
     this.flash.setFillStyle(color, 1);
-    this.flash.setAlpha(alpha);
+    this.flash.setAlpha(Math.min(0.2, alpha));
     this.tweens.killTweensOf(this.flash);
-    this.tweens.add({ targets: this.flash, alpha: 0, duration: 280 });
+    this.tweens.add({ targets: this.flash, alpha: 0, duration: 220 });
   }
 
   private burst(x: number, y: number, _tint: number): void {
@@ -1409,15 +1774,54 @@ export class GameScene extends Phaser.Scene {
   }
 
   private togglePause(): void {
-    if (!this.playing && !this.paused) return;
     if (this.gameOver || this.won) return;
-    this.paused = !this.paused;
-    this.pauseOverlay.setVisible(this.paused);
-    this.setPauseMenuInteractive(this.paused);
-    if (this.paused) {
+    if (!this.playing && !this.countdownActive && !this.paused) return;
+    this.setPaused(!this.paused);
+  }
+
+  private setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    // Ignorer si la scène n'est plus active (shutdown / transition)
+    if (!this.sys?.isActive()) return;
+    this.paused = paused;
+    this.pauseOverlay?.setVisible(paused);
+    this.pauseOverlay?.setActive(paused);
+    this.setPauseMenuInteractive(paused);
+    this.setLaneButtonsEnabled(!paused);
+
+    // Fige delayedCall (attaques, countdown, fusibles différés) sans avancer this.time.now-based deadlines
+    this.time.paused = paused;
+
+    if (paused) {
       this.tweens.pauseAll();
+      this.cameras.main.setAngle(0);
     } else {
       this.tweens.resumeAll();
+    }
+  }
+
+  /** Active / coupe les hitboxes ◀ ▶ (pas le bouton pause) */
+  private setLaneButtonsEnabled(on: boolean): void {
+    for (const hit of this.hudHits) {
+      // Le bouton pause est en haut à droite — on ne le désactive pas
+      if (hit.y < 80) continue;
+      if (on) {
+        if (!hit.input) {
+          hit.setInteractive({
+            hitArea: new Phaser.Geom.Circle(0, 0, hit.width / 2 || 44),
+            hitAreaCallback: Phaser.Geom.Circle.Contains,
+            useHandCursor: true,
+          });
+          if (hit.input) {
+            (hit.input as Phaser.Types.Input.InteractiveObject & { alwaysEnabled?: boolean }).alwaysEnabled =
+              true;
+          }
+        } else {
+          hit.input.enabled = true;
+        }
+      } else if (hit.input) {
+        hit.input.enabled = false;
+      }
     }
   }
 }

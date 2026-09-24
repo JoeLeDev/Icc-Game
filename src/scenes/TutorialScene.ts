@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { EQUIPMENTS, GAME_H, GAME_W } from '../config/gameConfig';
+import { fitTextureScale } from '../systems/AssetFactory';
 import { audio } from '../utils/AudioManager';
 
 export class TutorialScene extends Phaser.Scene {
@@ -52,9 +53,11 @@ export class TutorialScene extends Phaser.Scene {
 
     // equipment preview row
     EQUIPMENTS.forEach((eq, i) => {
-      this.add.image(40 + i * 48, GAME_H - 160, `eq-icon-${eq.id}`).setScale(1.1);
+      this.add
+        .image(40 + i * 48, GAME_H - 160, `eq-icon-${eq.id}`)
+        .setDisplaySize(36, 36);
     });
-    this.add.image(GAME_W - 40, GAME_H - 160, 'love').setScale(0.7);
+    this.add.image(GAME_W - 40, GAME_H - 160, 'love').setScale(fitTextureScale(this, 'love', 56) * 0.7);
 
     this.add
       .text(GAME_W / 2, GAME_H - 120, 'Objectif : survivre jusqu\'à la conquête finale', {

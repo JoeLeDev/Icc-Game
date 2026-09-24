@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_H, GAME_W } from '../config/gameConfig';
+import { fitTextureScale } from '../systems/AssetFactory';
 import { audio } from '../utils/AudioManager';
 import { Storage } from '../utils/Storage';
 
@@ -42,7 +43,8 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     // Decorative motorcycle
-    this.add.image(GAME_W / 2, 380, 'player').setScale(1.6).setAlpha(0.95);
+    const moto = this.add.image(GAME_W / 2, 380, 'player').setAlpha(0.95);
+    moto.setScale(fitTextureScale(this, 'player', 118) * 1.55);
     this.add.circle(GAME_W / 2, 400, 70, 0xff2d95, 0.12);
 
     const best = Storage.getBestDistance();

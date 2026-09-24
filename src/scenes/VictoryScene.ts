@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { EQUIPMENTS, EquipmentId, GAME_H, GAME_W } from '../config/gameConfig';
+import { fitTextureScale } from '../systems/AssetFactory';
 import { audio } from '../utils/AudioManager';
 import { formatShareText, shareResult } from '../utils/Share';
 import { Storage } from '../utils/Storage';
@@ -22,7 +23,7 @@ export class VictoryScene extends Phaser.Scene {
     this.add.rectangle(0, 0, GAME_W, GAME_H, 0x120828, 1).setOrigin(0);
     // celebratory glow
     this.add.circle(GAME_W / 2, 200, 120, 0xff2d95, 0.15);
-    this.add.image(GAME_W / 2, 200, 'player').setScale(1.5);
+    this.add.image(GAME_W / 2, 200, 'player').setScale(fitTextureScale(this, 'player', 118) * 1.45);
 
     this.add
       .text(GAME_W / 2, 320, 'TU ES ÉQUIPÉE\nPOUR CONQUÉRIR !', {
@@ -59,13 +60,25 @@ export class VictoryScene extends Phaser.Scene {
       const x = 70 + col * 80;
       const y = 480 + row * 60;
       const got = data.collected.includes(eq.id);
-      const icon = this.add.image(x, y, `eq-${eq.id}`).setScale(0.75).setAlpha(got ? 1 : 0.25);
+      const icon = this.add
+        .image(x, y, `eq-${eq.id}`)
+        .setScale(fitTextureScale(this, `eq-${eq.id}`, 56) * 0.75)
+        .setAlpha(got ? 1 : 0.25);
       if (got) {
-        this.tweens.add({ targets: icon, scale: 0.85, duration: 400, yoyo: true, repeat: -1, delay: i * 80 });
+        const s0 = icon.scaleX;
+        this.tweens.add({
+          targets: icon,
+          scaleX: s0 * 1.12,
+          scaleY: s0 * 1.12,
+          duration: 400,
+          yoyo: true,
+          repeat: -1,
+          delay: i * 80,
+        });
       }
     });
     if (data.love) {
-      this.add.image(GAME_W / 2 + 120, 540, 'love').setScale(0.9);
+      this.add.image(GAME_W / 2 + 120, 540, 'love').setScale(fitTextureScale(this, 'love', 56) * 0.9);
       this.add
         .text(GAME_W / 2 + 120, 575, 'Amour', {
           fontFamily: 'Outfit',
