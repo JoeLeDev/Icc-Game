@@ -1,5 +1,10 @@
 import Phaser from 'phaser';
 import { DISPLAY } from '../config/displaySizes';
+import {
+  LANE_OCCUPANCY,
+  occupancyRoleForKey,
+  targetWidthForLane,
+} from '../config/laneOccupancy';
 import { getCurrentLayout } from '../config/responsiveLayout';
 
 /**
@@ -44,6 +49,7 @@ export function applyPlayerDisplay(img: Phaser.GameObjects.Image): void {
   const L = getCurrentLayout();
   applyDisplayWidth(img, L.playerDisplayWidth, L.playerDisplayHeightMax);
   img.setData('displayRole', 'player');
+  img.setData('laneOccupancy', LANE_OCCUPANCY.motorcycle);
 }
 
 /** Icône HUD — taille calculée + clampée, jamais native PNG. */
@@ -56,20 +62,21 @@ export function applyHudEquipmentIcon(img: Phaser.GameObjects.Image): void {
 /** Équipement collectable sur la route. */
 export function applyWorldEquipmentDisplay(img: Phaser.GameObjects.Image): void {
   const L = getCurrentLayout();
-  applyDisplayBox(img, L.worldEquipmentSize);
+  const w = targetWidthForLane(L.laneWidthNear, 'equipment');
+  applyDisplayWidth(img, w, L.worldEquipmentSize * 1.35);
   img.setData('displayRole', 'world-equipment');
+  img.setData('laneOccupancy', LANE_OCCUPANCY.equipment);
 }
 
 /**
  * Après setTexture / changement de clé : réapplique la taille prévue selon le rôle.
- * Ne laisse JAMAIS les dimensions natives du PNG dicter l’affichage.
+ * Véhicules/obstacles : largeur = laneWidth × occupancy (remplissage de voie).
  */
 export function applyWorldDisplayForKey(img: Phaser.GameObjects.Image, logicalKey: string): void {
   const key = logicalKey.replace(/_ext$/, '');
   const L = getCurrentLayout();
-  const scale = L.worldObstacleScale;
+  const laneW = L.laneWidthNear;
 
-  // HUD icons — jamais la taille monde ni native
   if (key.startsWith('eq-icon-')) {
     applyHudEquipmentIcon(img);
     return;
@@ -79,51 +86,67 @@ export function applyWorldDisplayForKey(img: Phaser.GameObjects.Image, logicalKe
     return;
   }
 
-  const map: Record<string, { mode: 'w' | 'h' | 'box'; size: number; maxH?: number }> = {
-    player: { mode: 'w', size: L.playerDisplayWidth, maxH: L.playerDisplayHeightMax },
-    car: { mode: 'h', size: L.worldCarHeight },
-    truck: { mode: 'h', size: L.worldTruckHeight },
-    barrel: { mode: 'h', size: DISPLAY.WORLD_BARREL_HEIGHT * scale },
-    barrier: { mode: 'h', size: DISPLAY.WORLD_BARRIER_HEIGHT * scale },
-    cone: { mode: 'h', size: DISPLAY.WORLD_CONE_HEIGHT * scale },
-    hole: { mode: 'h', size: DISPLAY.WORLD_HOLE_HEIGHT * scale },
-    love: { mode: 'box', size: L.worldLoveSize },
-    depression: { mode: 'h', size: DISPLAY.WORLD_DEPRESSION_HEIGHT * scale },
-    calomnie: { mode: 'h', size: DISPLAY.WORLD_CALOMNIE_HEIGHT * scale },
-    peur: { mode: 'h', size: DISPLAY.WORLD_PEUR_HEIGHT * scale },
-    doute: { mode: 'h', size: DISPLAY.WORLD_DOUTE_HEIGHT * scale },
-    colere: { mode: 'h', size: DISPLAY.WORLD_COLERE_HEIGHT * scale },
-    projectile: { mode: 'h', size: DISPLAY.WORLD_PROJECTILE_HEIGHT * scale },
-    reject: { mode: 'h', size: DISPLAY.WORLD_REJECT_HEIGHT * scale },
-    'prop-lamp': { mode: 'h', size: L.propLampHeight },
-    'prop-palm': { mode: 'h', size: L.propPalmHeight },
-    'bonus-magnet': { mode: 'box', size: L.worldBonusSize },
-    'bonus-shield': { mode: 'box', size: L.worldBonusSize },
-    'bonus-life': { mode: 'box', size: L.worldBonusSize },
-    'bonus-slowmo': { mode: 'box', size: L.worldBonusSize },
-    'bonus-boost': { mode: 'box', size: L.worldBonusSize },
-  };
-
   if (key.startsWith('building_')) {
     applyDisplayHeight(img, L.buildingNearHeight ?? L.buildingBaseHeight);
     img.setData('displayRole', 'building');
     return;
   }
 
-  const spec = map[key];
-  if (!spec) {
-    applyDisplayHeight(img, 48 * scale);
+  const role = occupancyRoleForKey(key);
+  if (role === 'car' || role === 'truck' || role === 'largeObstacle' || role === 'smallObstacle') {
+    const tw = targetWidthForLane(laneW, role);
+    // Hauteur max pour éviter les sprites trop hauts (aspect PNG)
+    const maxH =
+      role === 'truck'
+        ? L.worldTruckHeight * 1.35
+        : role === 'car'
+          ? L.worldCarHeight * 1.4
+          : role === 'largeObstacle'
+            ? L.worldCarHeight * 1.1
+            : L.worldCarHeight * 0.85;
+    applyDisplayWidth(img, tw, maxH);
+    img.setData('displayRole', key);
+    img.setData('laneOccupancy', LANE_OCCUPANCY[role]);
     return;
   }
-  if (spec.mode === 'w') applyDisplayWidth(img, spec.size, spec.maxH);
-  else if (spec.mode === 'h') applyDisplayHeight(img, spec.size);
-  else applyDisplayBox(img, spec.size);
+
+  if (role === 'bonus') {
+    applyDisplayBox(img, targetWidthForLane(laneW, 'bonus'));
+    img.setData('displayRole', key);
+    img.setData('laneOccupancy', LANE_OCCUPANCY.bonus);
+    return;
+  }
+
+  if (role === 'enemy') {
+    applyDisplayWidth(img, targetWidthForLane(laneW, 'enemy'), L.worldCarHeight * 1.15);
+    img.setData('displayRole', key);
+    img.setData('laneOccupancy', LANE_OCCUPANCY.enemy);
+    return;
+  }
+
+  if (role === 'projectile') {
+    applyDisplayWidth(img, targetWidthForLane(laneW, 'projectile'));
+    img.setData('displayRole', key);
+    img.setData('laneOccupancy', LANE_OCCUPANCY.projectile);
+    return;
+  }
+
+  // Props / fallback hauteur
+  const map: Record<string, number> = {
+    'prop-lamp': L.propLampHeight,
+    'prop-palm': L.propPalmHeight,
+    reject: DISPLAY.WORLD_REJECT_HEIGHT * L.worldObstacleScale,
+  };
+  if (map[key] != null) {
+    applyDisplayHeight(img, map[key]!);
+    img.setData('displayRole', key);
+    return;
+  }
+
+  applyDisplayHeight(img, 48 * L.worldObstacleScale);
   img.setData('displayRole', key);
 }
 
-/**
- * Réapplique la taille selon le rôle mémorisé (après setTexture).
- */
 export function reapplyDisplayRole(img: Phaser.GameObjects.Image, logicalKey?: string): void {
   const role = img.getData('displayRole') as string | undefined;
   if (role === 'hud-equipment') {
@@ -143,7 +166,6 @@ export function reapplyDisplayRole(img: Phaser.GameObjects.Image, logicalKey?: s
   }
 }
 
-/** Facteur d’échelle profondeur : multiplie displayWidth/Height déjà normalisés. */
 export function applyDepthScale(img: Phaser.GameObjects.Image, depthScale: number): void {
   const baseW = img.getData('baseDisplayW') as number | undefined;
   const baseH = img.getData('baseDisplayH') as number | undefined;
@@ -154,7 +176,6 @@ export function applyDepthScale(img: Phaser.GameObjects.Image, depthScale: numbe
   img.setScale(img.scaleX * depthScale, img.scaleY * depthScale);
 }
 
-/** Mémorise la taille d’affichage « z=0 » après normalisation. */
 export function rememberBaseDisplay(img: Phaser.GameObjects.Image): void {
   img.setData('baseDisplayW', img.displayWidth);
   img.setData('baseDisplayH', img.displayHeight);

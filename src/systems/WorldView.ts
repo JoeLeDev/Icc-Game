@@ -11,7 +11,6 @@ import {
 } from '../config/roadsideDecor';
 import {
   type RoadsidePhase,
-  isFullyOffscreen,
   roadsidePhase,
   roadsideScrollMul,
 } from '../config/roadsideLifecycle';
@@ -355,26 +354,22 @@ export class WorldView {
     } else {
       const near =
         item.def.category === 'palm' ? this.layout.propPalmHeight : this.layout.propLampHeight;
-      const far = near * 0.2;
+      const far = near * 0.22;
       displayH = propDisplayHeight(item.z, maxZ, near, far) * item.scaleMul;
     }
     const displayW = displayH * aspect;
     item.sprite.setDisplaySize(displayW, displayH);
 
+    // Perspective naturelle uniquement — PAS de push outward en PASSED
     const roadPad = 8;
     let curb: number;
     let anchorOut: number;
     if (item.band === 'far') {
       curb = half * this.layout.buildingLateralFactor + this.layout.buildingMargin;
-      anchorOut = displayW * (phase === 'PASSED' ? 0.48 : 0.4);
+      anchorOut = displayW * 0.4;
     } else {
       curb = half * this.layout.propLateralFactor + roadPad;
-      anchorOut = displayW * (phase === 'PASSED' ? 0.35 : 0.2);
-    }
-
-    if (phase === 'PASSED') {
-      curb += half * 0.25 * Math.min(1.5, decor.exitT);
-      anchorOut += displayW * 0.15 * Math.min(1.2, decor.exitT);
+      anchorOut = displayW * 0.2;
     }
 
     let x = this.proj.centerX + item.side * (half + curb + anchorOut);
@@ -391,9 +386,7 @@ export class WorldView {
     item.sprite.setAlpha(phase === 'PASSED' ? 0.95 : 0.72 + (1 - approachT) * 0.28);
 
     const nearness =
-      phase === 'PASSED'
-        ? 1 + Math.min(1, decor.exitT) * 0.2
-        : 1 - approachT;
+      phase === 'PASSED' ? 1 + Math.min(0.5, decor.exitT) * 0.15 : 1 - approachT;
     if (item.band === 'far') {
       item.sprite.setDepth(DEPTH.roadsideBuildings + nearness * 0.95);
     } else {
@@ -409,12 +402,9 @@ export class WorldView {
 
       if (item.z <= 0) {
         const b = item.sprite.getBounds();
-        const off = isFullyOffscreen(
-          { left: b.left, right: b.right, top: b.top, bottom: b.bottom },
-          this.BW,
-          this.BH,
-        );
-        if (off || item.z < -220) {
+        // Sortie principale = bas (bounds.top sous le viewport)
+        const pastBottom = b.top > this.BH + 56;
+        if (pastBottom || item.z < -280) {
           this.recycleRoadsideItem(item);
           this.layoutRoadsideItem(item);
         }

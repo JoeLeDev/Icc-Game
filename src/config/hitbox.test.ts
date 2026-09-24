@@ -112,8 +112,8 @@ describe('computeLayout — viewports demandés', () => {
     it(`${vp.name} (${vp.width}×${vp.height})`, () => {
       const L = computeLayout(vp.width, vp.height, { ...vp.safe });
       const ratio = L.playerDisplayWidth / L.laneWidthNear;
-      expect(ratio).toBeGreaterThanOrEqual(0.55);
-      expect(ratio).toBeLessThanOrEqual(0.65);
+      expect(ratio).toBeGreaterThanOrEqual(0.68);
+      expect(ratio).toBeLessThanOrEqual(0.75);
       expect(L.hudIconSize).toBeLessThanOrEqual(30);
       expect(L.centerX).toBeCloseTo(L.gameOffsetX + L.gameWidth / 2, 5);
     });

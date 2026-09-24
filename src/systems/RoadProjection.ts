@@ -29,10 +29,8 @@ export class RoadProjection {
   }
 
   roadHalfAt(z: number): number {
-    if (z < 0) {
-      const exitT = passedExitT(z);
-      return this.nearRoadHalf * (1 + exitT * 1.15);
-    }
+    // PASSED : geler la demi-route au plan joueur (pas d’éjection latérale)
+    if (z < 0) return this.nearRoadHalf;
     const t = this.depthT(z);
     return this.nearRoadHalf + (this.farRoadHalf - this.nearRoadHalf) * t;
   }
@@ -57,7 +55,7 @@ export class RoadProjection {
 
   /**
    * Projection décor roadside — autorise z < 0 (PASSED).
-   * Continue vers le bas + élargissement latéral jusqu’à hors écran.
+   * Sortie principale = BAS. X = perspective naturelle figée au plan joueur (pas de push outward).
    */
   projectDecor(z: number): { y: number; roadHalf: number; t: number; exitT: number } {
     if (z >= 0) {
@@ -70,9 +68,9 @@ export class RoadProjection {
       };
     }
     const exitT = passedExitT(z, PASSED_EXIT_SPAN);
-    const y = this.playerY + exitT * (this.viewportBottom - this.playerY + 120);
-    const roadHalf = this.nearRoadHalf * (1 + exitT * 1.2);
-    return { y, roadHalf, t: 0, exitT };
+    // Descend sous le plan joueur ; roadHalf figé → pas d’éjection latérale
+    const y = this.playerY + exitT * (this.viewportBottom - this.playerY + 160);
+    return { y, roadHalf: this.nearRoadHalf, t: 0, exitT };
   }
 
   /** Sortie visuelle douce d’une entité gameplay après le plan joueur */

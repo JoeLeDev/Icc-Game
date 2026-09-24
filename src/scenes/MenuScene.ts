@@ -50,7 +50,6 @@ export class MenuScene extends Phaser.Scene {
     // Decorative motorcycle
     const moto = this.add.image(W / 2, H * 0.45, 'player').setAlpha(0.95);
     applyDisplayWidth(moto, layout.menuPlayerWidth, layout.playerDisplayHeightMax * 1.4);
-    this.add.circle(W / 2, H * 0.45 + 20, layout.menuPlayerWidth * 0.7, 0xff2d95, 0.12);
 
     const best = Storage.getBestDistance();
     this.add

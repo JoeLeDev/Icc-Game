@@ -96,20 +96,20 @@ export const LAYOUT_RULES = {
   /** Tablette : légèrement plus large que téléphone, sous le plafond desktop */
   GAMEPLAY_TABLET_SOFT_MAX: 560,
 
-  PLAYER_LANE_RATIO: 0.6,
-  PLAYER_WIDTH_MIN: 44,
-  PLAYER_WIDTH_MAX: 110,
+  PLAYER_LANE_RATIO: 0.72,
+  PLAYER_WIDTH_MIN: 48,
+  PLAYER_WIDTH_MAX: 128,
   PLAYER_HEIGHT_RATIO: 1.62,
-  PLAYER_HEIGHT_MIN: 68,
-  PLAYER_HEIGHT_MAX: 150,
+  PLAYER_HEIGHT_MIN: 72,
+  PLAYER_HEIGHT_MAX: 190,
 
   HUD_ICON_VIEWPORT_RATIO: 0.062,
   HUD_ICON_MIN: 22,
   HUD_ICON_MAX: 30,
 
-  WORLD_EQUIP_LANE_RATIO: 0.4,
-  WORLD_EQUIP_MIN: 28,
-  WORLD_EQUIP_MAX: 52,
+  WORLD_EQUIP_LANE_RATIO: 0.36,
+  WORLD_EQUIP_MIN: 30,
+  WORLD_EQUIP_MAX: 48,
 
   TOUCH_BTN_WIDTH_RATIO: 0.145,
   TOUCH_BTN_MIN: 48,
@@ -322,12 +322,12 @@ export function computeLayout(
     worldCarHeight,
     worldTruckHeight,
     worldObstacleScale: obstacleScale,
-    propLampHeight: clamp(bh * 0.14, 72, 130),
-    propPalmHeight: clamp(bh * 0.175, 90, 165),
-    // Murs de ville : near ≈ 70–85 % de la hauteur navigateur (coupés OK)
-    buildingNearHeight: clamp(bh * 0.82, 480, 820),
-    buildingFarHeight: clamp(bh * 0.08, 52, 88),
-    buildingBaseHeight: clamp(bh * 0.82, 480, 820),
+    propLampHeight: clamp(bh * 0.155, 100, 155),
+    propPalmHeight: clamp(bh * 0.2, 120, 190),
+    // Murs de ville imposants mais coherents avec palm/lamp (~430–560 @ 1440×900)
+    buildingNearHeight: clamp(bh * 0.55, 430, 560),
+    buildingFarHeight: clamp(bh * 0.07, 48, 72),
+    buildingBaseHeight: clamp(bh * 0.55, 430, 560),
     buildingMinScale: 0.08,
     buildingMaxScale: 1,
     buildingMargin: clamp(18 * obstacleScale, 14, 36),

@@ -19,6 +19,7 @@ import {
   nextLaneIndex,
   readDevQuery,
 } from '../config/gameConfig';
+import { horizonFadeAlpha, horizonSpawnZ, LANE_OCCUPANCY } from '../config/laneOccupancy';
 import { textureKey } from '../systems/AssetFactory';
 import {
   aabbOverlap,
@@ -939,7 +940,6 @@ export class GameScene extends Phaser.Scene {
   private layoutEntity(e: LaneEntity): void {
     if (e.screenSpace) return;
     const sp = e.sprite as Phaser.GameObjects.Image;
-    // Sortie visuelle après le plan joueur (ne fige plus à z=0)
     const p =
       e.worldZ < 0
         ? this.world.proj.projectPast(e.lane, e.worldZ)
@@ -955,21 +955,28 @@ export class GameScene extends Phaser.Scene {
     sp.setPosition(p.x, p.y);
     sp.setDisplaySize(bw * p.scale * base, bh * p.scale * base);
     sp.setDepth(entityDrawDepth(Math.max(0, e.worldZ), this.world.proj.maxZ));
+
+    // Apparition progressive depuis l’horizon (évite le pop milieu de route)
+    const fade = horizonFadeAlpha(e.worldZ, this.world.proj.maxZ);
+    if (!e.hit) sp.setAlpha(fade);
+
     if (e.warning) {
       e.warning.setPosition(p.x, p.y);
       e.warning.setScale(p.scale);
       e.warning.setDepth(sp.depth - 1);
-      e.warning.setAlpha(0.1 + Math.sin(this.simTime * 10) * 0.08);
+      e.warning.setAlpha((0.1 + Math.sin(this.simTime * 10) * 0.08) * fade);
     }
     if (e.label) {
       e.label.setPosition(p.x, p.y - 28 * p.scale);
       e.label.setScale(Math.max(0.6, p.scale));
       e.label.setDepth(sp.depth + 1);
+      e.label.setAlpha(fade);
     }
   }
 
   private spawnZ(): number {
-    return Math.min(this.world.proj.maxZ * 0.9, Math.max(140, this.scrollSpeed * CONFIG.spawn.reactionTime));
+    // Toujours près du point de fuite — jamais au milieu de la route
+    return horizonSpawnZ(this.world.proj.maxZ);
   }
 
   private hasEffect(id: string): boolean {
@@ -1152,7 +1159,7 @@ export class GameScene extends Phaser.Scene {
     const id = pickEquipmentId(this.collected, this.rng);
     if (!id) return;
 
-    const z = this.spawnZ() + 40;
+    const z = this.spawnZ();
     const lane = pickSafeCollectLane({
       playerLane: this.lane,
       closedLane: this.activeClosedLane(),
@@ -1176,7 +1183,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnBonusOrLove(): void {
-    const z = this.spawnZ() + 28;
+    const z = this.spawnZ();
     const lane = pickSafeCollectLane({
       playerLane: this.lane,
       closedLane: this.activeClosedLane(),
@@ -1951,12 +1958,32 @@ export class GameScene extends Phaser.Scene {
   private updateDebugOverlay(): void {
     if (!this.debugMode || !this.debugText) return;
     const tier = getTier(this.collected.size);
+    const nearest = this.entities
+      .filter((e) => !e.screenSpace && e.worldZ > -20)
+      .sort((a, b) => a.worldZ - b.worldZ)[0];
+    let nearestLine = 'enti: none';
+    if (nearest) {
+      const sp = nearest.sprite as Phaser.GameObjects.Image;
+      const laneW = this.world.proj.laneSpacingAt(Math.max(0, nearest.worldZ));
+      const occ = (sp.getData('laneOccupancy') as number) ?? 0;
+      const p =
+        nearest.worldZ < 0
+          ? this.world.proj.projectPast(nearest.lane, nearest.worldZ)
+          : this.world.proj.project(nearest.lane, nearest.worldZ);
+      nearestLine = [
+        `z=${nearest.worldZ.toFixed(0)} y=${sp.y.toFixed(0)} sc=${p.scale.toFixed(2)}`,
+        `laneW=${laneW.toFixed(0)} dw=${sp.displayWidth.toFixed(0)} occ=${occ.toFixed(2)}`,
+        `kind=${nearest.kind} fade=${horizonFadeAlpha(nearest.worldZ, this.world.proj.maxZ).toFixed(2)}`,
+      ].join(' | ');
+    }
     this.debugText.setText(
       [
         `DBG seed=${this.runSeed ?? 'rand'} t=${this.simTime.toFixed(1)}s hitboxes ON`,
         `tier=${tier} spd=${this.scrollSpeed.toFixed(0)} eq=${this.collected.size}/7`,
-        `lane=${this.lane} hit=${this.playerHitbox.w.toFixed(0)}x${this.playerHitbox.h.toFixed(0)}`,
-        `game=${this.W}x${this.H} offX=${this.layout.gameOffsetX} enti=${this.entities.length}`,
+        `lane=${this.lane} hit=${this.playerHitbox.w.toFixed(0)}x${this.playerHitbox.h.toFixed(0)} motoOcc=${LANE_OCCUPANCY.motorcycle}`,
+        `pw=${this.layout.playerDisplayWidth.toFixed(0)}/${this.layout.laneWidthNear.toFixed(0)}`,
+        `game=${this.W}x${this.H} enti=${this.entities.length}`,
+        nearestLine,
       ].join('\n'),
     );
   }

@@ -42,6 +42,15 @@ export function roadsideScrollMul(
 
 export type ScreenBounds = { left: number; right: number; top: number; bottom: number };
 
+/** Despawn principal PASSED : haut du sprite sous le bas du viewport */
+export function isDespawnedPastBottom(
+  bounds: ScreenBounds,
+  viewportH: number,
+  margin = OFFSCREEN_MARGIN,
+): boolean {
+  return bounds.top > viewportH + margin;
+}
+
 export function isFullyOffscreen(
   bounds: ScreenBounds,
   viewportW: number,
@@ -49,8 +58,8 @@ export function isFullyOffscreen(
   margin = OFFSCREEN_MARGIN,
 ): boolean {
   return (
+    isDespawnedPastBottom(bounds, viewportH, margin) ||
     bounds.bottom < -margin ||
-    bounds.top > viewportH + margin ||
     bounds.right < -margin ||
     bounds.left > viewportW + margin
   );

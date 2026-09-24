@@ -42,24 +42,25 @@ describe('roadsideLifecycle — offscreen', () => {
   });
 });
 
-describe('projectDecor — PASSED continue sous le joueur', () => {
-  it('y augmente et roadHalf s’élargit pour z < 0', () => {
+describe('projectDecor — PASSED sort par le bas sans éjection latérale', () => {
+  it('y augmente et roadHalf reste figé (pas de push outward)', () => {
     const L = computeLayout(390, 844, { top: 47, right: 0, bottom: 34, left: 0 });
     const proj = new RoadProjection();
     proj.applyLayout(L);
     const atPlayer = proj.projectDecor(0);
     const passed = proj.projectDecor(-PASSED_EXIT_SPAN);
     expect(passed.y).toBeGreaterThan(atPlayer.y);
-    expect(passed.roadHalf).toBeGreaterThan(atPlayer.roadHalf);
+    expect(passed.roadHalf).toBeCloseTo(atPlayer.roadHalf, 5);
     expect(passed.exitT).toBeCloseTo(1, 5);
     expect(passedExitT(-45)).toBeCloseTo(45 / PASSED_EXIT_SPAN, 5);
   });
 
-  it('échelle bâtiment continue de croître en PASSED', () => {
-    const near = 700;
-    const far = 70;
-    expect(buildingDisplayHeight(-40, 420, near, far)).toBeGreaterThan(
-      buildingDisplayHeight(0, 420, near, far),
-    );
+  it('échelle bâtiment quasi figée en PASSED (sortie verticale)', () => {
+    const near = 500;
+    const far = 60;
+    const at0 = buildingDisplayHeight(0, 420, near, far);
+    const past = buildingDisplayHeight(-40, 420, near, far);
+    expect(past).toBeGreaterThanOrEqual(at0);
+    expect(past / at0).toBeLessThan(1.2);
   });
 });

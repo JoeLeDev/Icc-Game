@@ -18,10 +18,10 @@ describe('computeLayout — viewports', () => {
     describe(`${vp.name} (${vp.width}×${vp.height})`, () => {
       const L = computeLayout(vp.width, vp.height, { ...vp.safe });
 
-      it('moto = 55–65 % d’une voie', () => {
+      it('moto = 68–75 % d’une voie', () => {
         const ratio = L.playerDisplayWidth / L.laneWidthNear;
-        expect(ratio).toBeGreaterThanOrEqual(0.55);
-        expect(ratio).toBeLessThanOrEqual(0.65);
+        expect(ratio).toBeGreaterThanOrEqual(0.68);
+        expect(ratio).toBeLessThanOrEqual(0.75);
       });
 
       it('icônes HUD clampées', () => {

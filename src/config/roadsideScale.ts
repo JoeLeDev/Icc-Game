@@ -1,7 +1,7 @@
 /**
- * Courbes d’échelle roadside — bâtiment ≠ prop.
+ * Courbes d’échelle roadside — bâtiment ≠ prop, même profondeur de référence.
  * u = 1 à la caméra (z=0), 0 à l’horizon (z=maxZ).
- * z < 0 = phase PASSED : légère croissance pendant la sortie.
+ * z < 0 = PASSED : échelle quasi figée (sortie verticale).
  */
 
 import { passedExitT } from './roadsideLifecycle';
@@ -12,8 +12,8 @@ export function depthUnit(z: number, maxZ: number): number {
   return 1 - t;
 }
 
-export const BUILDING_SCALE_POWER = 1.72;
-export const PROP_SCALE_POWER = 1.12;
+export const BUILDING_SCALE_POWER = 1.55;
+export const PROP_SCALE_POWER = 1.2;
 
 export function buildingScale(z: number, maxZ: number): number {
   return Math.pow(depthUnit(z, maxZ), BUILDING_SCALE_POWER);
@@ -23,7 +23,6 @@ export function propScale(z: number, maxZ: number): number {
   return Math.pow(depthUnit(z, maxZ), PROP_SCALE_POWER);
 }
 
-/** Hauteur affichée bâtiment — peut dépasser le viewport ; croît encore en PASSED */
 export function buildingDisplayHeight(
   z: number,
   maxZ: number,
@@ -31,8 +30,7 @@ export function buildingDisplayHeight(
   farHeight: number,
 ): number {
   if (z < 0) {
-    const exitT = passedExitT(z);
-    return nearHeight * (1 + Math.min(1.2, exitT) * 0.55);
+    return nearHeight * (1 + Math.min(0.15, passedExitT(z) * 0.08));
   }
   const s = buildingScale(z, maxZ);
   return farHeight + (nearHeight - farHeight) * s;
@@ -44,10 +42,7 @@ export function propDisplayHeight(
   nearHeight: number,
   farHeight: number,
 ): number {
-  if (z < 0) {
-    const exitT = passedExitT(z);
-    return nearHeight * (1 + Math.min(1.0, exitT) * 0.4);
-  }
+  if (z < 0) return nearHeight * (1 + Math.min(0.12, passedExitT(z) * 0.06));
   const s = propScale(z, maxZ);
   return farHeight + (nearHeight - farHeight) * s;
 }
