@@ -13,6 +13,10 @@ interface EndData {
   love: boolean;
   distance: number;
   avoided: number;
+  doubts?: number;
+  score?: number;
+  grade?: string;
+  gradeLabel?: string;
 }
 
 export class GameOverScene extends Phaser.Scene {
@@ -27,16 +31,6 @@ export class GameOverScene extends Phaser.Scene {
     setCurrentLayout(layout);
 
     this.add.rectangle(0, 0, W, H, 0x0a0618, 1).setOrigin(0);
-
-    // moody clouds
-    ['DÉPRESSION', 'DOUTE', 'PEUR'].forEach((label, i) => {
-      const x = 80 + i * 110;
-      const y = 160 + (i % 2) * 30;
-      this.add.ellipse(x, y, 90, 50, 0x1a0033, 0.85);
-      this.add
-        .text(x, y, label, { fontFamily: 'Outfit', fontSize: '10px', color: '#b39ddb' })
-        .setOrigin(0.5);
-    });
 
     const moto = this.add.image(W / 2, 280, 'player').setAngle(15).setAlpha(0.7).setTint(0x666688);
     applyDisplayWidth(moto, layout.gameOverPlayerWidth, layout.playerDisplayHeightMax * 1.2);
@@ -62,27 +56,45 @@ export class GameOverScene extends Phaser.Scene {
     this.add
       .text(
         W / 2,
-        480,
+        465,
+        `Note ${data.grade ?? '—'} — ${data.gradeLabel ?? ''}  ·  ${data.score ?? 0} pts`,
+        { fontFamily: 'Orbitron', fontSize: '15px', color: '#ffd54f' },
+      )
+      .setOrigin(0.5);
+
+    this.add
+      .text(
+        W / 2,
+        500,
         `${data.equipment}/7 équipements  ·  ${data.distance} m${data.love ? '  ·  Amour ❤' : ''}`,
         { fontFamily: 'Outfit', fontSize: '13px', color: '#9b59ff' },
       )
       .setOrigin(0.5);
 
+    this.add
+      .text(
+        W / 2,
+        525,
+        `${data.avoided ?? 0} esquivés  ·  ${data.doubts ?? 0} doutes`,
+        { fontFamily: 'Outfit', fontSize: '12px', color: '#b39ddb' },
+      )
+      .setOrigin(0.5);
+
     const best = Storage.getBestDistance();
     this.add
-      .text(W / 2, 510, `Record local : ${best} m`, {
+      .text(W / 2, 550, `Record local : ${best} m`, {
         fontFamily: 'Outfit',
         fontSize: '12px',
         color: '#757575',
       })
       .setOrigin(0.5);
 
-    this.btn(W / 2, 590, 'RÉESSAYER', () => {
+    this.btn(W / 2, 610, 'RÉESSAYER', () => {
       audio.ui();
       this.scene.start('Game');
     });
 
-    this.btn(W / 2, 650, 'PARTAGER', async () => {
+    this.btn(W / 2, 670, 'PARTAGER', async () => {
       audio.ui();
       const r = await shareResult(
         formatShareText({
@@ -96,7 +108,7 @@ export class GameOverScene extends Phaser.Scene {
       else if (r === 'cancelled') this.feedback('Partage annulé');
     }, 0x2a1050);
 
-    this.btn(W / 2, 710, 'RETOUR À L\'ACCUEIL', () => {
+    this.btn(W / 2, 730, 'RETOUR À L\'ACCUEIL', () => {
       audio.ui();
       this.scene.start('Menu');
     }, 0x1a0a30);

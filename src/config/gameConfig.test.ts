@@ -7,32 +7,41 @@ import {
   nextLaneIndex,
   readDevQuery,
 } from './gameConfig';
+import { DIFFICULTY_PRESETS } from './difficulty';
 import {
   canReachLane,
-  chooseObstacleLanes,
   estimateEquipmentPaceSeconds,
   hasReachableEscape,
   pickEquipmentId,
+  pickMotoSpawnLanes,
   switchesNeeded,
   timeToReact,
 } from '../systems/SpawnFairness';
+import {
+  ObstacleLaneDistributor,
+  chooseObstacleLanesControlled,
+} from './obstacleSpawn';
 import { Rng } from '../utils/Rng';
 
 describe('getScrollSpeed (rééquilibrage)', () => {
-  it('respecte maxScroll après boost', () => {
-    expect(getScrollSpeed(7, true, false)).toBeLessThanOrEqual(CONFIG.speed.maxScroll);
+  it('respecte le plafond après boost (baseline facile)', () => {
+    const cap = CONFIG.speed.maxScroll * DIFFICULTY_PRESETS.easy.maxScrollMul;
+    expect(getScrollSpeed(7, true, false, 'easy')).toBeLessThanOrEqual(cap + 1e-6);
   });
 
   it('le ralenti écrase le boost quand les deux sont actifs', () => {
-    const slowOnly = getScrollSpeed(4, false, true);
-    const both = getScrollSpeed(4, true, true);
+    const slowOnly = getScrollSpeed(4, false, true, 'easy');
+    const both = getScrollSpeed(4, true, true, 'easy');
     expect(both).toBeCloseTo(slowOnly, 5);
   });
 
-  it('ne dépasse jamais maxScroll', () => {
-    for (let eq = 0; eq <= 7; eq++) {
-      expect(getScrollSpeed(eq, true, false)).toBeLessThanOrEqual(CONFIG.speed.maxScroll);
-      expect(getScrollSpeed(eq, true, true)).toBeLessThanOrEqual(CONFIG.speed.maxScroll);
+  it('ne dépasse jamais le plafond de la difficulté', () => {
+    for (const diff of ['easy', 'normal', 'hard'] as const) {
+      const cap = CONFIG.speed.maxScroll * DIFFICULTY_PRESETS[diff].maxScrollMul;
+      for (let eq = 0; eq <= 7; eq++) {
+        expect(getScrollSpeed(eq, true, false, diff)).toBeLessThanOrEqual(cap + 1e-6);
+        expect(getScrollSpeed(eq, true, true, diff)).toBeLessThanOrEqual(cap + 1e-6);
+      }
     }
   });
 
@@ -141,12 +150,72 @@ describe('fairness locale (pas une garantie globale)', () => {
     expect(timeToReact(200, 100, 1)).toBeCloseTo(1, 5);
   });
 
-  it('chooseObstacleLanes ne renvoie jamais 3 voies', () => {
+  it('chooseObstacleLanesControlled ne renvoie jamais 3 voies', () => {
     const rng = new Rng(7);
+    const dist = new ObstacleLaneDistributor();
     for (let i = 0; i < 30; i++) {
-      const lanes = chooseObstacleLanes(5, 1, null, [], 250, 170, rng);
-      if (lanes) expect(lanes.length).toBeLessThan(3);
+      const d = chooseObstacleLanesControlled({
+        tier: 5,
+        playerLane: 1,
+        closedLane: null,
+        existing: [],
+        spawnZ: 250,
+        scrollSpeed: 170,
+        rng,
+        distributor: dist,
+      });
+      if (d) expect(d.lanes.length).toBeLessThan(3);
     }
+  });
+
+  it('évite les lanes avec danger en hold (occupancy spatiale)', () => {
+    const rng = new Rng(42);
+    const dist = new ObstacleLaneDistributor();
+    for (let i = 0; i < 20; i++) {
+      const d = chooseObstacleLanesControlled({
+        tier: 4,
+        playerLane: 1,
+        closedLane: null,
+        existing: [
+          { lane: 0, z: 15, role: 'danger' },
+          { lane: 2, z: 18, role: 'danger' },
+        ],
+        spawnZ: 250,
+        scrollSpeed: 200,
+        rng,
+        distributor: dist,
+      });
+      if (d) {
+        expect(d.lanes.every((l) => l === 1)).toBe(true);
+      }
+    }
+  });
+
+  it('pickMotoSpawnLanes réserve toujours une échappatoire', () => {
+    const rng = new Rng(3);
+    // Double obstacle proche milieu+gauche → 0 moto (seule la droite est libre)
+    const lanes = pickMotoSpawnLanes(
+      1,
+      null,
+      [
+        { lane: 0, z: 120, role: 'danger' },
+        { lane: 1, z: 140, role: 'danger' },
+      ],
+      2,
+      rng,
+    );
+    expect(lanes.length).toBe(0);
+
+    // Une seule voie dangereuse → au plus 1 moto, pas sur la dernière libre seule
+    const lanes2 = pickMotoSpawnLanes(
+      1,
+      null,
+      [{ lane: 0, z: 100, role: 'danger' }],
+      2,
+      rng,
+    );
+    expect(lanes2.length).toBeLessThanOrEqual(1);
+    expect(lanes2.includes(0)).toBe(false);
   });
 
   it('voie fermée + occupants existants sont pris en compte', () => {
@@ -170,6 +239,7 @@ describe('déblocage attaques', () => {
   it('introduit les familles progressivement', () => {
     expect(isAttackUnlocked('doute', 0, 30)).toBe(false);
     expect(isAttackUnlocked('doute', 1, 25)).toBe(true);
+    expect(isAttackUnlocked('depression', 1, 15)).toBe(true);
     expect(isAttackUnlocked('fromBehind', 4, 100)).toBe(false);
     expect(isAttackUnlocked('fromBehind', 5, 90)).toBe(true);
   });

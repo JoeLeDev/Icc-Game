@@ -9,3 +9,6 @@ Phaser place gauche/droite + `flipX`.
 
 Au boot, chaque PNG trouvé remplace la texture procédurale du même rôle.
 Recharger la page après ajout (`npm run dev`).
+
+**Décor :** `tree_01.png`, `tree_02.png`  
+**Ennemis moto (dépression / peur) :** `foe.png`

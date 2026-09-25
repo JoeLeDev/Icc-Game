@@ -23,21 +23,14 @@ export function roadsidePhase(z: number, maxZ: number): RoadsidePhase {
 }
 
 /**
- * Multiplicateur de scroll selon phase + bande.
- * PASSED sort plus vite ; props NEAR plus rapides que buildings.
+ * Multiplicateur de scroll — CONSTANT par bande (parallax),
+ * sans saut FAR→NEAR→PASSED qui provoquait un freinage/accélération artificielle.
  */
 export function roadsideScrollMul(
-  phase: RoadsidePhase,
+  _phase: RoadsidePhase,
   band: 'far' | 'near',
 ): number {
-  const base: Record<RoadsidePhase, number> = {
-    FAR: 0.52,
-    APPROACHING: 0.82,
-    NEAR: 1.12,
-    PASSED: 1.95,
-  };
-  const bandBoost = band === 'near' ? 1.12 : 1;
-  return base[phase] * bandBoost;
+  return band === 'far' ? 0.9 : 1;
 }
 
 export type ScreenBounds = { left: number; right: number; top: number; bottom: number };

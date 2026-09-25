@@ -14,6 +14,7 @@ import {
   roadsidePhase,
   roadsideScrollMul,
 } from '../config/roadsideLifecycle';
+import { roadHalfFromScreenY } from '../config/continuousProjection';
 import { buildingDisplayHeight, propDisplayHeight } from '../config/roadsideScale';
 import { fitTextureScale, textureKey } from './AssetFactory';
 import { DEPTH, RoadProjection } from './RoadProjection';
@@ -24,7 +25,12 @@ interface RoadsideItem {
   def: RoadsidePropDefinition;
   scaleMul: number;
   band: RoadsideBand;
+  /** Écartement hors-chaussée stable (ne change pas en PASSED) */
+  lateralMul: number;
+  marginPx: number;
   sprite: Phaser.GameObjects.Image;
+  /** Debug trajectoire */
+  trail?: { x: number; y: number }[];
 }
 
 interface CityMidItem {
@@ -113,7 +119,7 @@ export class WorldView {
     this.updateRoadside(worldDelta);
     this.updateSpeedLines(boosting, scrollSpeed);
     this.parallaxBackground();
-    if (this.debugEnabled) this.drawRoadsideDebug();
+    if (this.debugEnabled || this.isSceneryTrajectoryDebug()) this.drawRoadsideDebug();
   }
 
   private get BW(): number {
@@ -268,8 +274,9 @@ export class WorldView {
 
   private layoutCityMid(m: CityMidItem): void {
     const t = this.proj.depthT(m.z);
-    const half = this.proj.roadHalfAt(m.z);
-    const y = this.proj.project(1, m.z).y;
+    // Même demi-largeur continue que le décor roadside (pas de freeze gameplay)
+    const half = this.proj.decorRoadHalfAt(m.z);
+    const y = this.proj.projectY(m.z);
     const nearH = this.layout.buildingNearHeight * 0.42;
     const farH = this.layout.buildingFarHeight * 1.15;
     const h = buildingDisplayHeight(m.z, this.proj.maxZ, nearH, farH) * m.scaleMul;
@@ -277,12 +284,9 @@ export class WorldView {
     const w = h * aspect;
     m.sprite.setDisplaySize(w, h);
 
-    // Plus loin que les roadside FAR — converge vers le même centre
-    const lateral = half + half * 0.95 + w * 0.38 + 12;
-    let x = this.proj.centerX + m.side * lateral;
-    const roadEdge = this.proj.centerX + m.side * (half + 6);
-    if (m.side < 0) x = Math.min(x, roadEdge - 4);
-    else x = Math.max(x, roadEdge + 4);
+    // side stable × half croissant — pas de clamp vers le centre
+    const lateralMul = 1.95;
+    const x = this.proj.centerX + m.side * (half * lateralMul + w * 0.38 + 12);
 
     m.sprite.setPosition(x, y);
     m.sprite.setAlpha(0.22 + (1 - t) * 0.18);
@@ -321,23 +325,48 @@ export class WorldView {
     if (p.def.category === 'building') {
       sprite.setFlipX(p.side > 0 || Math.random() < 0.2);
     }
+    const lateralMul =
+      p.band === 'far'
+        ? 1 + this.layout.buildingLateralFactor
+        : 1 + this.layout.propLateralFactor;
+    const marginPx =
+      p.band === 'far' ? this.layout.buildingMargin : 8;
     const item: RoadsideItem = {
       side: p.side,
       z: p.z,
       def: p.def,
       scaleMul: p.scaleMul,
       band: p.band,
+      lateralMul,
+      marginPx,
       sprite,
+      trail: this.isSceneryTrajectoryDebug() ? [] : undefined,
     };
     this.roadside.push(item);
     this.layoutRoadsideItem(item);
     return item;
   }
 
+  private isSceneryTrajectoryDebug(): boolean {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage.getItem('ICC_DEBUG_SCENERY_TRAJECTORY') === '1') {
+        return true;
+      }
+      if (typeof location !== 'undefined') {
+        const q = new URLSearchParams(location.search);
+        if (q.get('sceneryTrail') === '1' || q.get('ICC_DEBUG_SCENERY_TRAJECTORY') === '1') return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return this.debugEnabled;
+  }
+
   private layoutRoadsideItem(item: RoadsideItem): void {
     const maxZ = this.proj.maxZ;
     const phase = roadsidePhase(item.z, maxZ);
     const decor = this.proj.projectDecor(item.z);
+    // roadHalf CONTINU (croît encore après le plan joueur)
     const half = decor.roadHalf;
     const y = decor.y;
     const aspect = item.sprite.frame.width / Math.max(1, item.sprite.frame.height);
@@ -353,35 +382,32 @@ export class WorldView {
         ) * item.scaleMul;
     } else {
       const near =
-        item.def.category === 'palm' ? this.layout.propPalmHeight : this.layout.propLampHeight;
+        item.def.category === 'palm'
+          ? this.layout.propPalmHeight
+          : item.def.category === 'tree'
+            ? this.layout.propTreeHeight
+            : this.layout.propLampHeight;
       const far = near * 0.22;
       displayH = propDisplayHeight(item.z, maxZ, near, far) * item.scaleMul;
     }
     const displayW = displayH * aspect;
     item.sprite.setDisplaySize(displayW, displayH);
 
-    // Perspective naturelle uniquement — PAS de push outward en PASSED
-    const roadPad = 8;
-    let curb: number;
-    let anchorOut: number;
-    if (item.band === 'far') {
-      curb = half * this.layout.buildingLateralFactor + this.layout.buildingMargin;
-      anchorOut = displayW * 0.4;
-    } else {
-      curb = half * this.layout.propLateralFactor + roadPad;
-      anchorOut = displayW * 0.2;
-    }
-
-    let x = this.proj.centerX + item.side * (half + curb + anchorOut);
-
-    const roadEdge = this.proj.centerX + item.side * (half + roadPad);
-    if (item.side < 0) {
-      x = Math.min(x, roadEdge - 2);
-    } else {
-      x = Math.max(x, roadEdge + 2);
-    }
+    // Une seule formule X : side × (half × lateralMul + margin) + ancrage sprite
+    // half croît avec Y → écartement monotone horizon → bas d’écran
+    const anchorOut = displayW * (item.band === 'far' ? 0.4 : 0.2);
+    const x =
+      this.proj.centerX +
+      item.side * (half * item.lateralMul + item.marginPx + anchorOut);
 
     item.sprite.setPosition(x, y);
+
+    if (this.isSceneryTrajectoryDebug()) {
+      if (!item.trail) item.trail = [];
+      item.trail.push({ x, y });
+      if (item.trail.length > 48) item.trail.shift();
+    }
+
     const approachT = Math.min(1, Math.max(0, item.z / maxZ));
     item.sprite.setAlpha(phase === 'PASSED' ? 0.95 : 0.72 + (1 - approachT) * 0.28);
 
@@ -428,6 +454,12 @@ export class WorldView {
     item.def = next.def;
     item.scaleMul = next.scaleMul;
     item.band = next.band;
+    item.lateralMul =
+      item.band === 'far'
+        ? 1 + this.layout.buildingLateralFactor
+        : 1 + this.layout.propLateralFactor;
+    item.marginPx = item.band === 'far' ? this.layout.buildingMargin : 8;
+    if (item.trail) item.trail.length = 0;
 
     item.sprite.setTexture(textureKey(item.def.key, this.scene));
     if (item.def.category === 'building') {
@@ -454,9 +486,10 @@ export class WorldView {
     for (const t of this.debugLabels) t.destroy();
     this.debugLabels = [];
 
+    const trailOnly = !this.debugEnabled && this.isSceneryTrajectoryDebug();
+
     for (const item of this.roadside) {
       const phase: RoadsidePhase = roadsidePhase(item.z, this.proj.maxZ);
-      const b = item.sprite.getBounds();
       const color =
         phase === 'PASSED'
           ? 0xff1744
@@ -466,6 +499,24 @@ export class WorldView {
               ? 0x69f0ae
               : 0x80d8ff;
 
+      // Trajectoire récente : doit s’écarter du centre, jamais se refermer
+      if (item.trail && item.trail.length >= 2) {
+        g.lineStyle(2, item.side < 0 ? 0x69f0ae : 0xff2d95, 0.85);
+        g.beginPath();
+        g.moveTo(item.trail[0]!.x, item.trail[0]!.y);
+        for (let i = 1; i < item.trail.length; i++) {
+          g.lineTo(item.trail[i]!.x, item.trail[i]!.y);
+        }
+        g.strokePath();
+        for (const p of item.trail) {
+          g.fillStyle(item.side < 0 ? 0x69f0ae : 0xff2d95, 0.55);
+          g.fillCircle(p.x, p.y, 2.5);
+        }
+      }
+
+      if (trailOnly) continue;
+
+      const b = item.sprite.getBounds();
       g.lineStyle(1, color, 0.7);
       g.strokeRect(b.left, b.top, b.width, b.height);
       g.fillStyle(color, 0.15);
@@ -486,6 +537,7 @@ export class WorldView {
           `${phase} ${item.def.category}`,
           `z=${item.z.toFixed(0)} side=${item.side > 0 ? 'R' : 'L'}`,
           `sc=${item.sprite.displayHeight.toFixed(0)} ${item.band}`,
+          `dx=${(item.sprite.x - this.proj.centerX).toFixed(0)}`,
           `b=[${b.left.toFixed(0)},${b.top.toFixed(0)}..${b.right.toFixed(0)},${b.bottom.toFixed(0)}]`,
         ].join('\n'),
       );
@@ -503,7 +555,13 @@ export class WorldView {
     const top = this.proj.horizonY;
     const bot = this.BH + 10;
     const far = this.proj.farRoadHalf;
-    const near = this.proj.nearRoadHalf;
+    const nearBot = roadHalfFromScreenY(
+      bot,
+      top,
+      this.proj.playerY,
+      this.proj.nearRoadHalf,
+      far,
+    );
     const cx = this.proj.centerX;
 
     this.ground.fillStyle(0x12081f, 1);
@@ -513,15 +571,15 @@ export class WorldView {
     g.beginPath();
     g.moveTo(cx - far, top);
     g.lineTo(cx + far, top);
-    g.lineTo(cx + near, bot);
-    g.lineTo(cx - near, bot);
+    g.lineTo(cx + nearBot, bot);
+    g.lineTo(cx - nearBot, bot);
     g.closePath();
     g.fillPath();
 
     g.lineStyle(3, 0x9b59ff, 0.75);
-    g.lineBetween(cx - far, top, cx - near, bot);
+    g.lineBetween(cx - far, top, cx - nearBot, bot);
     g.lineStyle(3, 0xff2d95, 0.75);
-    g.lineBetween(cx + far, top, cx + near, bot);
+    g.lineBetween(cx + far, top, cx + nearBot, bot);
 
     for (const laneDiv of [-0.5, 0.5] as const) {
       this.drawDashedLane(g, laneDiv, dashOffset);

@@ -135,6 +135,8 @@ export function applyWorldDisplayForKey(img: Phaser.GameObjects.Image, logicalKe
   const map: Record<string, number> = {
     'prop-lamp': L.propLampHeight,
     'prop-palm': L.propPalmHeight,
+    tree_01: L.propTreeHeight,
+    tree_02: L.propTreeHeight,
     reject: DISPLAY.WORLD_REJECT_HEIGHT * L.worldObstacleScale,
   };
   if (map[key] != null) {

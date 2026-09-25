@@ -1,7 +1,7 @@
 import { ROADSIDE_BUILDING_KEYS } from './displaySizes';
 
 /** Catégorie de décor roadside */
-export type RoadsideCategory = 'building' | 'palm' | 'lamp' | 'small';
+export type RoadsideCategory = 'building' | 'palm' | 'lamp' | 'small' | 'tree';
 
 /** Bande latérale : bâtiments plus loin de la chaussée */
 export type RoadsideBand = 'far' | 'near';
@@ -19,28 +19,48 @@ export type RoadsidePropDefinition = {
   scaleMax: number;
 };
 
+export const ROADSIDE_TREE_KEYS = ['tree_01', 'tree_02'] as const;
+
 export const ROADSIDE_DEFS: readonly RoadsidePropDefinition[] = [
-  // Bâtiments — densés, emprise modérée (peuvent se rejoindre visuellement)
   { key: 'building_01', category: 'building', footprint: 54, minGap: 16, scaleMin: 0.92, scaleMax: 1.12 },
   { key: 'building_02', category: 'building', footprint: 54, minGap: 16, scaleMin: 0.9, scaleMax: 1.1 },
   { key: 'building_03', category: 'building', footprint: 54, minGap: 16, scaleMin: 0.88, scaleMax: 1.08 },
   { key: 'prop-palm', category: 'palm', footprint: 20, minGap: 8, scaleMin: 0.88, scaleMax: 1.12 },
+  { key: 'tree_01', category: 'tree', footprint: 22, minGap: 10, scaleMin: 0.9, scaleMax: 1.14 },
+  { key: 'tree_02', category: 'tree', footprint: 22, minGap: 10, scaleMin: 0.9, scaleMax: 1.14 },
   { key: 'prop-lamp', category: 'lamp', footprint: 9, minGap: 4, scaleMin: 0.9, scaleMax: 1.08 },
   { key: 'prop-lamp', category: 'small', footprint: 12, minGap: 6, scaleMin: 0.72, scaleMax: 0.88 },
 ] as const;
 
-/** Patterns — plus de bâtiments pour former un mur de ville */
+/** Patterns — arbres + palm + bâtiments */
 export const STREET_PATTERNS: readonly (readonly RoadsideCategory[])[] = [
-  ['building', 'palm', 'lamp'],
-  ['building', 'lamp', 'palm'],
-  ['building', 'palm', 'building'],
-  ['palm', 'building', 'lamp'],
-  ['building', 'small', 'palm'],
+  ['building', 'tree', 'lamp'],
+  ['building', 'palm', 'tree'],
+  ['tree', 'building', 'lamp'],
+  ['building', 'tree', 'building'],
+  ['palm', 'building', 'tree'],
+  ['building', 'small', 'tree'],
+  ['tree', 'lamp', 'building', 'palm'],
   ['building', 'palm'],
-  ['lamp', 'palm', 'building', 'palm'],
-  ['building', 'building', 'palm'],
-  ['palm', 'building', 'palm', 'lamp'],
+  ['lamp', 'tree', 'building', 'tree'],
 ] as const;
+
+/** Alternance tree_01 / tree_02 (anti-série) */
+let lastTreeKey: (typeof ROADSIDE_TREE_KEYS)[number] = 'tree_02';
+
+export function resetTreeAlternation(): void {
+  lastTreeKey = 'tree_02';
+}
+
+export function pickTreeKey(rng: () => number = Math.random): (typeof ROADSIDE_TREE_KEYS)[number] {
+  // 85 % alterne, 15 % random — évite les longues séries
+  if (rng() < 0.85) {
+    lastTreeKey = lastTreeKey === 'tree_01' ? 'tree_02' : 'tree_01';
+  } else {
+    lastTreeKey = rng() < 0.5 ? 'tree_01' : 'tree_02';
+  }
+  return lastTreeKey;
+}
 
 /** Bande latérale selon catégorie */
 export function bandForCategory(category: RoadsideCategory): RoadsideBand {
@@ -59,10 +79,13 @@ export function pickDef(
   if (pool.length === 0) {
     return ROADSIDE_DEFS.find((d) => d.category === 'lamp')!;
   }
-  // Varier les bâtiments sans toujours reprendre le même
   if (category === 'building') {
     const keys = [...ROADSIDE_BUILDING_KEYS];
     const key = keys[Math.floor(rng() * keys.length)]!;
+    return pool.find((d) => d.key === key) ?? pool[0]!;
+  }
+  if (category === 'tree') {
+    const key = pickTreeKey(rng);
     return pool.find((d) => d.key === key) ?? pool[0]!;
   }
   return pool[Math.floor(rng() * pool.length)]!;
@@ -181,10 +204,12 @@ export function planSideDecor(side: -1 | 1, opts: PlanOptions): PlannedDecor[] {
 
         const z = start + def.footprint * 0.5;
 
-        // Soft rule : palm/small pas au milieu d’une façade
+        // Soft rule : palm/tree/small pas au milieu d’une façade
         if (band === 'near') {
-          const midOk = farTrack.every((b) =>
-            b.category !== 'building' || palmTrunkClearsBuilding(z, (b.start + b.end) * 0.5, b.end - b.start),
+          const midOk = farTrack.every(
+            (b) =>
+              b.category !== 'building' ||
+              palmTrunkClearsBuilding(z, (b.start + b.end) * 0.5, b.end - b.start),
           );
           if (!midOk) continue;
         }
@@ -211,6 +236,7 @@ export function planSideDecor(side: -1 | 1, opts: PlanOptions): PlannedDecor[] {
 
 /** Plan complet G+D avec phases décalées */
 export function planRoadsideDecor(maxZ: number, rng: () => number = Math.random): PlannedDecor[] {
+  resetTreeAlternation();
   const leftPhase = 18 + rng() * 24;
   // Droite volontairement décalée — évite la symétrie building|building
   const rightPhase = leftPhase + 48 + rng() * 55;

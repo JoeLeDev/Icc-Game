@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { DIFFICULTY_IDS, DIFFICULTY_PRESETS, type DifficultyId } from '../config/difficulty';
 import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
 import { applyDisplayWidth } from '../systems/SpriteDisplay';
 import { audio } from '../utils/AudioManager';
@@ -6,6 +7,12 @@ import { Storage } from '../utils/Storage';
 
 export class MenuScene extends Phaser.Scene {
   private soundBtn!: Phaser.GameObjects.Text;
+  private difficultyId: DifficultyId = Storage.getDifficulty();
+  private difficultyChips: {
+    id: DifficultyId;
+    bg: Phaser.GameObjects.Rectangle;
+    txt: Phaser.GameObjects.Text;
+  }[] = [];
 
   constructor() {
     super('Menu');
@@ -16,6 +23,8 @@ export class MenuScene extends Phaser.Scene {
     const H = this.scale.height;
     const layout = computeLayout(W, H, readSafeAreaInsets());
     setCurrentLayout(layout);
+    this.difficultyId = Storage.getDifficulty();
+    this.difficultyChips = [];
 
     this.drawBackground();
 
@@ -48,20 +57,30 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     // Decorative motorcycle
-    const moto = this.add.image(W / 2, H * 0.45, 'player').setAlpha(0.95);
+    const moto = this.add.image(W / 2, H * 0.42, 'player').setAlpha(0.95);
     applyDisplayWidth(moto, layout.menuPlayerWidth, layout.playerDisplayHeightMax * 1.4);
 
     const best = Storage.getBestDistance();
     this.add
-      .text(W / 2, H * 0.57, best > 0 ? `Meilleure distance : ${best} m` : 'Prête à conquérir ?', {
+      .text(W / 2, H * 0.545, best > 0 ? `Meilleure distance : ${best} m` : 'Prête à conquérir ?', {
         fontFamily: 'Outfit, sans-serif',
         fontSize: '13px',
         color: '#b39ddb',
       })
       .setOrigin(0.5);
 
-    this.makeGradientButton(W / 2, H * 0.66, 'JOUER', () => {
+    this.add
+      .text(W / 2, H * 0.585, 'Difficulté', {
+        fontFamily: 'Outfit, sans-serif',
+        fontSize: '12px',
+        color: '#ce93d8',
+      })
+      .setOrigin(0.5);
+    this.makeDifficultyRow(W / 2, H * 0.625);
+
+    this.makeGradientButton(W / 2, H * 0.7, 'JOUER', () => {
       audio.ui();
+      Storage.setDifficulty(this.difficultyId);
       this.scene.start('Game');
     });
 
@@ -83,6 +102,43 @@ export class MenuScene extends Phaser.Scene {
         audio.ui();
       },
     );
+  }
+
+  private makeDifficultyRow(cx: number, y: number): void {
+    const gap = 88;
+    const startX = cx - gap;
+    DIFFICULTY_IDS.forEach((id, i) => {
+      const x = startX + i * gap;
+      const preset = DIFFICULTY_PRESETS[id];
+      const bg = this.add
+        .rectangle(x, y, 80, 34, 0x1a0a30, 1)
+        .setStrokeStyle(2, 0x5e35b1)
+        .setInteractive({ useHandCursor: true });
+      const txt = this.add
+        .text(x, y, preset.label, {
+          fontFamily: 'Outfit, sans-serif',
+          fontSize: '13px',
+          color: '#ffffff',
+        })
+        .setOrigin(0.5);
+      bg.on('pointerdown', () => {
+        audio.ui();
+        this.difficultyId = id;
+        Storage.setDifficulty(id);
+        this.refreshDifficultyChips();
+      });
+      this.difficultyChips.push({ id, bg, txt });
+    });
+    this.refreshDifficultyChips();
+  }
+
+  private refreshDifficultyChips(): void {
+    for (const chip of this.difficultyChips) {
+      const on = chip.id === this.difficultyId;
+      chip.bg.setFillStyle(on ? 0x9b59ff : 0x1a0a30, 1);
+      chip.bg.setStrokeStyle(2, on ? 0xff2d95 : 0x5e35b1);
+      chip.txt.setColor(on ? '#ffffff' : '#b39ddb');
+    }
   }
 
   private drawBackground(): void {
@@ -192,13 +248,15 @@ export class MenuScene extends Phaser.Scene {
     } else {
       board.slice(0, 8).forEach((s, i) => {
         const love = s.love ? ' ❤' : '';
+        const grade = s.grade ? ` [${s.grade}]` : '';
+        const pts = s.score != null ? ` · ${s.score} pts` : '';
         lines.push(
           this.add
             .text(
               0,
               -110 + i * 32,
-              `${i + 1}. ${s.distance} m — ${s.equipment}/7${love}`,
-              { fontFamily: 'Outfit', fontSize: '14px', color: '#fff' },
+              `${i + 1}. ${s.distance} m${pts}${grade} — ${s.equipment}/7${love}`,
+              { fontFamily: 'Outfit', fontSize: '13px', color: '#fff' },
             )
             .setOrigin(0.5),
         );

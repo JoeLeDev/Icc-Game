@@ -72,6 +72,10 @@ export function generateTextures(scene: Phaser.Scene): void {
   g.generateTexture('prop-lamp', 28, 64);
   drawPalm(g);
   g.generateTexture('prop-palm', 40, 70);
+  drawTree(g, 0x1b5e20);
+  g.generateTexture('tree_01', 36, 72);
+  drawTree(g, 0x2e7d32);
+  g.generateTexture('tree_02', 40, 78);
   drawSideBuilding(g);
   g.generateTexture('prop-building', 36, 56);
 
@@ -118,14 +122,17 @@ export async function tryLoadExternalAssets(scene: Phaser.Scene): Promise<string
     { key: 'bonus-life', path: 'assets/bonus_life.png' },
     { key: 'bonus-slowmo', path: 'assets/bonus_slowmo.png' },
     { key: 'bonus-boost', path: 'assets/bonus_boost.png' },
-    { key: 'depression', path: 'assets/enemy_depression.png' },
+    { key: 'depression', path: 'assets/foe.png' },
     { key: 'calomnie', path: 'assets/enemy_calomnie.png' },
-    { key: 'peur', path: 'assets/enemy_peur.png' },
+    { key: 'peur', path: 'assets/foe.png' },
+    { key: 'foe', path: 'assets/foe.png' },
     { key: 'doute', path: 'assets/enemy_doute.png' },
     { key: 'projectile', path: 'assets/fx_projectile.png' },
     { key: 'colere', path: 'assets/fx_fire.png' },
     { key: 'prop-lamp', path: 'assets/prop_lamp.png' },
     { key: 'prop-palm', path: 'assets/prop_palm.png' },
+    { key: 'tree_01', path: 'assets/tree_01.png' },
+    { key: 'tree_02', path: 'assets/tree_02.png' },
     { key: 'skyline', path: 'assets/skyline.png' },
     // Background global desktop (plein écran) — Building.png en attendant un panorama dédié
     { key: 'dressing-city', path: 'assets/Building.png' },
@@ -570,6 +577,15 @@ function drawPalm(g: Phaser.GameObjects.Graphics): void {
   g.fillTriangle(20, 30, 4, 12, 20, 18);
   g.fillTriangle(20, 30, 36, 12, 20, 18);
   g.fillTriangle(20, 28, 10, 4, 30, 4);
+}
+
+function drawTree(g: Phaser.GameObjects.Graphics, foliage: number): void {
+  g.clear();
+  g.fillStyle(0x4e342e, 1);
+  g.fillRect(16, 36, 6, 36);
+  g.fillStyle(foliage, 1);
+  g.fillTriangle(19, 8, 2, 40, 36, 40);
+  g.fillTriangle(19, 0, 6, 28, 32, 28);
 }
 
 function drawSideBuilding(g: Phaser.GameObjects.Graphics): void {

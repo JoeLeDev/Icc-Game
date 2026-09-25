@@ -1,10 +1,19 @@
 import { CONFIG } from '../config/gameConfig';
+import type { FinalGrade } from '../config/scoring';
+import {
+  DEFAULT_DIFFICULTY,
+  type DifficultyId,
+  getDifficultyPreset,
+  isDifficultyId,
+} from '../config/difficulty';
 
 export interface LocalScore {
   distance: number;
   equipment: number;
   love: boolean;
   date: string;
+  score?: number;
+  grade?: FinalGrade;
 }
 
 export const Storage = {
@@ -15,6 +24,15 @@ export const Storage = {
 
   setSoundEnabled(on: boolean): void {
     localStorage.setItem(CONFIG.storage.soundKey, on ? '1' : '0');
+  },
+
+  getDifficulty(): DifficultyId {
+    const v = localStorage.getItem(CONFIG.storage.difficultyKey);
+    return isDifficultyId(v) ? v : DEFAULT_DIFFICULTY;
+  },
+
+  setDifficulty(id: DifficultyId): void {
+    localStorage.setItem(CONFIG.storage.difficultyKey, getDifficultyPreset(id).id);
   },
 
   getBestDistance(): number {
@@ -37,7 +55,12 @@ export const Storage = {
   addScore(entry: LocalScore): void {
     const board = this.getLeaderboard();
     board.push(entry);
-    board.sort((a, b) => b.distance - a.distance || b.equipment - a.equipment);
+    board.sort(
+      (a, b) =>
+        (b.score ?? b.distance) - (a.score ?? a.distance) ||
+        b.distance - a.distance ||
+        b.equipment - a.equipment,
+    );
     localStorage.setItem(CONFIG.storage.leaderboardKey, JSON.stringify(board.slice(0, 10)));
     this.setBestDistance(entry.distance);
   },

@@ -19,6 +19,19 @@ import {
   nextLaneIndex,
   readDevQuery,
 } from '../config/gameConfig';
+import { type DifficultyPreset, getDifficultyPreset } from '../config/difficulty';
+import {
+  MAX_MOTO_FOES,
+  MOTO_HOLD_Z,
+  MOTO_RAM_IFRAMES,
+  MOTO_SHOOT_FIRST_DELAY,
+  MOTO_SHOOT_INTERVAL,
+  MOTO_SIDE_HITS_TO_DEFEAT,
+  classifyEnemyRam,
+  isRammableEnemyKind,
+  sideHitDefeats,
+} from '../config/enemyRamming';
+import { SCORE, computeRunScore } from '../config/scoring';
 import { horizonFadeAlpha, horizonSpawnZ, LANE_OCCUPANCY } from '../config/laneOccupancy';
 import { textureKey } from '../systems/AssetFactory';
 import {
@@ -31,10 +44,15 @@ import {
 import { DEPTH, entityDrawDepth } from '../systems/RoadProjection';
 import {
   RoadOccupant,
-  chooseObstacleLanes,
   pickEquipmentId,
+  pickMotoSpawnLanes,
   pickSafeCollectLane,
 } from '../systems/SpawnFairness';
+import {
+  ObstacleLaneDistributor,
+  chooseObstacleLanesControlled,
+  isObstacleSpawnDebugEnabled,
+} from '../config/obstacleSpawn';
 import {
   applyHudEquipmentIcon,
   applyPlayerDisplay,
@@ -83,6 +101,14 @@ interface LaneEntity {
   baseScale?: number;
   /** Clé logique (sans _ext) pour re-normaliser l’affichage */
   logicalKey?: string;
+  /** Coups de flanc déjà portés (ennemis moto) */
+  sideHits?: number;
+  /** Invuln après un coup latéral */
+  ramIFrames?: number;
+  /** Reste au plan joueur jusqu’à élimination */
+  holdAtPlayer?: boolean;
+  /** Cooldown tir moto (s) — une fois au hold */
+  shootCooldown?: number;
 }
 
 interface ActiveEffect {
@@ -100,6 +126,8 @@ export class GameScene extends Phaser.Scene {
   private trail!: Phaser.GameObjects.Particles.ParticleEmitter;
 
   private lane: number = CONFIG.player.startLane;
+  /** Voie avant le dernier changement — pour reculer après un choc */
+  private previousLane: number = CONFIG.player.startLane;
   private targetX = 0;
   private lives: number = CONFIG.player.maxLives;
   /** Invincibilité restante (secondes de simulation) */
@@ -110,11 +138,16 @@ export class GameScene extends Phaser.Scene {
   private loveCollected = false;
   private distance = 0;
   private obstaclesAvoided = 0;
+  /** Doutes (?) dissipés — points + note finale */
+  private doubtsCleared = 0;
+  private runScore = 0;
 
   private entities: LaneEntity[] = [];
   private effects: ActiveEffect[] = [];
 
   private scrollSpeed: number = CONFIG.speed.base;
+  private difficulty!: DifficultyPreset;
+  private obstacleDistributor = new ObstacleLaneDistributor();
   private playing = false;
   private paused = false;
   private countdownActive = false;
@@ -159,8 +192,8 @@ export class GameScene extends Phaser.Scene {
   private countdownText!: Phaser.GameObjects.Text;
   private speedBanner!: Phaser.GameObjects.Text;
   private pauseBtn!: Phaser.GameObjects.Container;
-  private leftBtn!: Phaser.GameObjects.Container;
-  private rightBtn!: Phaser.GameObjects.Container;
+  private pauseBtnHit!: Phaser.GameObjects.Zone;
+  private controlsHint!: Phaser.GameObjects.Text;
   private pauseOverlay!: Phaser.GameObjects.Container;
   private pauseMenuHits: Phaser.GameObjects.Rectangle[] = [];
   private hudHits: Phaser.GameObjects.Rectangle[] = [];
@@ -181,9 +214,6 @@ export class GameScene extends Phaser.Scene {
   private hudTopBar!: Phaser.GameObjects.Rectangle;
   private eqPanel!: Phaser.GameObjects.Rectangle;
   private layout!: LayoutMetrics;
-  private pauseBtnHit!: Phaser.GameObjects.Zone;
-  private leftBtnHit!: Phaser.GameObjects.Zone;
-  private rightBtnHit!: Phaser.GameObjects.Zone;
   private pauseBg!: Phaser.GameObjects.Rectangle;
   private hitDebugGfx: Phaser.GameObjects.Graphics | null = null;
   private playerHitbox = { w: 42, h: 70 };
@@ -321,14 +351,15 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.placeButton(this.pauseBtn, this.pauseBtnHit, this.layout.pauseBtnX, this.layout.pauseBtnY, this.layout.pauseBtnSize);
-    this.placeButton(this.leftBtn, this.leftBtnHit, this.layout.touchBtnLeftX, this.layout.touchBtnLeftY, this.layout.touchBtnSize);
-    this.placeButton(this.rightBtn, this.rightBtnHit, this.layout.touchBtnRightX, this.layout.touchBtnRightY, this.layout.touchBtnSize);
 
     this.distractionOverlay.setPosition(this.BW / 2, this.BH / 2).setSize(this.BW, this.BH);
     this.flash.setPosition(this.BW / 2, this.BH / 2).setSize(this.BW, this.BH);
     this.toast.setPosition(this.layout.centerX, this.layout.playerY - 120);
     this.speedBanner.setPosition(this.layout.centerX, this.H * 0.32);
     this.countdownText.setPosition(this.layout.centerX, this.H * 0.42);
+    if (this.controlsHint?.active) {
+      this.controlsHint.setPosition(this.layout.centerX, this.H * 0.55);
+    }
     if (this.pauseOverlay && this.pauseBg) {
       this.pauseBg.setSize(this.BW, this.BH);
       this.pauseOverlay.setPosition(this.BW / 2, this.BH / 2);
@@ -389,6 +420,7 @@ export class GameScene extends Phaser.Scene {
     this.laneTween = null;
 
     this.lane = CONFIG.player.startLane;
+    this.previousLane = CONFIG.player.startLane;
     this.lives = CONFIG.player.maxLives;
     this.invincibleRemaining = 0;
     this.hasTempShield = false;
@@ -396,9 +428,13 @@ export class GameScene extends Phaser.Scene {
     this.loveCollected = false;
     this.distance = 0;
     this.obstaclesAvoided = 0;
+    this.doubtsCleared = 0;
+    this.runScore = 0;
     this.entities = [];
     this.effects = [];
-    this.scrollSpeed = CONFIG.speed.base;
+    this.difficulty = getDifficultyPreset(Storage.getDifficulty());
+    this.obstacleDistributor.reset();
+    this.scrollSpeed = CONFIG.speed.base * this.difficulty.speedMul;
     this.playing = false;
     this.paused = false;
     this.countdownActive = false;
@@ -412,10 +448,10 @@ export class GameScene extends Phaser.Scene {
     this.closeWarningRemaining = 0;
     this.distractionRemaining = 0;
     this.spawnTimers = {
-      obstacle: 3.5,
+      obstacle: 3.5 * this.difficulty.obstacleIntervalMul,
       equipment: CONFIG.spawn.firstEquipmentDelay,
       bonus: 16,
-      attack: 22,
+      attack: 22 * this.difficulty.attackIntervalMul,
     };
     this.breathRemaining = 0;
     this.lastSpeedTier = -1;
@@ -619,26 +655,26 @@ export class GameScene extends Phaser.Scene {
       () => this.togglePause(),
       this.layout.pauseBtnSize,
       0.55,
-      'pause',
     );
-    this.leftBtn = this.makeButton(
-      this.layout.touchBtnLeftX,
-      this.layout.touchBtnLeftY,
-      '◀',
-      () => this.changeLane(-1),
-      this.layout.touchBtnSize,
-      0.65,
-      'left',
-    );
-    this.rightBtn = this.makeButton(
-      this.layout.touchBtnRightX,
-      this.layout.touchBtnRightY,
-      '▶',
-      () => this.changeLane(1),
-      this.layout.touchBtnSize,
-      0.65,
-      'right',
-    );
+
+    this.controlsHint = this.add
+      .text(
+        this.layout.centerX,
+        this.H * 0.55,
+        'Ordinateur : ← → ou A / D\nMobile : swiper gauche / droite',
+        {
+          fontFamily: 'Outfit, sans-serif',
+          fontSize: '15px',
+          color: '#e1bee7',
+          align: 'center',
+          lineSpacing: 6,
+          stroke: '#000',
+          strokeThickness: 3,
+        },
+      )
+      .setOrigin(0.5)
+      .setDepth(DEPTH.hud + 21)
+      .setAlpha(0);
 
     this.input.setTopOnly(false);
   }
@@ -650,7 +686,6 @@ export class GameScene extends Phaser.Scene {
     cb: () => void,
     size = 40,
     alpha = 0.55,
-    slot: 'pause' | 'left' | 'right' = 'pause',
   ): Phaser.GameObjects.Container {
     const hitPad = Math.max(96, size + 40);
     const bg = this.add.circle(0, 0, size / 2, 0x1a0a30, alpha).setStrokeStyle(2, 0xff2d95, 0.9);
@@ -666,22 +701,14 @@ export class GameScene extends Phaser.Scene {
     }
     (hit as Phaser.GameObjects.Zone & { isHudControl?: boolean }).isHudControl = true;
     this.hudHits.push(hit as unknown as Phaser.GameObjects.Rectangle);
-    if (slot === 'pause') this.pauseBtnHit = hit;
-    else if (slot === 'left') this.leftBtnHit = hit;
-    else this.rightBtnHit = hit;
+    this.pauseBtnHit = hit;
 
     const press = () => {
       bg.setFillStyle(0x9b59ff, 0.95);
       this.time.delayedCall(120, () => {
         if (bg.active) bg.setFillStyle(0x1a0a30, alpha);
       });
-      if (label === 'Ⅱ') {
-        if (this.gameOver || this.won) return;
-        audio.ui();
-        cb();
-        return;
-      }
-      if (!this.canControl()) return;
+      if (this.gameOver || this.won) return;
       audio.ui();
       cb();
     };
@@ -835,6 +862,7 @@ export class GameScene extends Phaser.Scene {
     const next = nextLaneIndex(this.lane, dir, closed, LANES);
     if (next === this.lane) return;
 
+    this.previousLane = this.lane;
     this.lane = next;
     this.targetX = this.world.proj.laneScreenX(this.lane);
 
@@ -860,12 +888,19 @@ export class GameScene extends Phaser.Scene {
 
   private startCountdown(): void {
     this.countdownActive = true;
+    this.controlsHint.setAlpha(1);
     const steps = ['3', '2', '1', 'GO !'];
     let i = 0;
     const tick = () => {
       if (this.gameOver || this.won) return;
       if (i >= steps.length) {
         this.countdownText.setAlpha(0);
+        this.tweens.add({
+          targets: this.controlsHint,
+          alpha: 0,
+          duration: 500,
+          onComplete: () => this.controlsHint.setVisible(false),
+        });
         this.countdownActive = false;
         this.playing = true;
         this.invincibleRemaining = CONFIG.player.startInvincibility;
@@ -906,7 +941,7 @@ export class GameScene extends Phaser.Scene {
     const eqCount = this.collected.size;
     const boost = this.hasEffect('boost');
     const slowmo = this.hasEffect('slowmo');
-    this.scrollSpeed = getScrollSpeed(eqCount, boost, slowmo);
+    this.scrollSpeed = getScrollSpeed(eqCount, boost, slowmo, this.difficulty);
 
     const tier = getTier(eqCount);
     if (tier !== this.lastSpeedTier && tier >= 3 && !this.finalPhase) {
@@ -916,7 +951,7 @@ export class GameScene extends Phaser.Scene {
 
     this.world.update(dt, this.scrollSpeed, boost);
     this.distance += (this.scrollSpeed * dt) / CONFIG.scoring.distancePerMeter;
-    this.hudDist.setText(`${Math.floor(this.distance)} M`);
+    this.refreshHudScore();
     this.player.y = this.world.proj.playerY;
 
     if (this.breathRemaining > 0) this.breathRemaining = Math.max(0, this.breathRemaining - dt);
@@ -1041,7 +1076,9 @@ export class GameScene extends Phaser.Scene {
     if (this.spawnTimers.obstacle <= 0) {
       this.spawnObstaclePattern(tier);
       this.spawnTimers.obstacle =
-        CONFIG.spawn.obstacleInterval[tier]! * this.rng.float(0.9, 1.12);
+        CONFIG.spawn.obstacleInterval[tier]! *
+        this.difficulty.obstacleIntervalMul *
+        this.rng.float(0.9, 1.12);
     }
     if (this.spawnTimers.equipment <= 0 && this.collected.size < 7) {
       this.spawnEquipment();
@@ -1057,7 +1094,9 @@ export class GameScene extends Phaser.Scene {
         this.breathRemaining = Math.max(this.breathRemaining, CONFIG.spawn.breathAfterAttack);
       }
       this.spawnTimers.attack =
-        CONFIG.spawn.attackInterval[tier]! * this.rng.float(0.9, 1.15);
+        CONFIG.spawn.attackInterval[tier]! *
+        this.difficulty.attackIntervalMul *
+        this.rng.float(0.9, 1.15);
     }
   }
 
@@ -1085,24 +1124,40 @@ export class GameScene extends Phaser.Scene {
     return [0, 1, 2].filter((l) => !blocked.includes(l) && l !== closed);
   }
 
+  private motoFoeLanes(): number[] {
+    return this.entities
+      .filter((e) => isRammableEnemyKind(e.kind) && !e.hit)
+      .map((e) => Math.round(e.lane));
+  }
+
+  private countMotoFoes(): number {
+    return this.entities.filter((e) => isRammableEnemyKind(e.kind) && !e.hit).length;
+  }
+
   private laneBusyNear(lane: number, z: number, gap: number = CONFIG.spawn.minGapFront): boolean {
     return this.entities.some((e) => !e.screenSpace && e.lane === lane && Math.abs(e.worldZ - z) < gap);
   }
 
   private spawnObstaclePattern(tier: number): void {
     const z = this.spawnZ();
-    const lanes = chooseObstacleLanes(
+    const decision = chooseObstacleLanesControlled({
       tier,
-      this.lane,
-      this.activeClosedLane(),
-      this.currentOccupants(),
-      z,
-      this.scrollSpeed,
-      this.rng,
-    );
-    if (!lanes) return;
+      playerLane: this.lane,
+      closedLane: this.activeClosedLane(),
+      existing: this.currentOccupants(),
+      spawnZ: z,
+      scrollSpeed: this.scrollSpeed,
+      rng: this.rng,
+      distributor: this.obstacleDistributor,
+      doubleBlockMul: this.difficulty.doubleBlockMul,
+      minGap: CONFIG.spawn.minGapFront,
+      debug: this.debugMode || isObstacleSpawnDebugEnabled(),
+    });
+    if (!decision) return;
 
-    for (const lane of lanes) {
+    let spawned = 0;
+    for (const lane of decision.lanes) {
+      // Double-check spatial (déjà validé, mais évite race avec autres spawns)
       if (this.laneBusyNear(lane, z)) continue;
       let kind = 'car';
       const r = this.rng.next();
@@ -1110,6 +1165,15 @@ export class GameScene extends Phaser.Scene {
       else if (tier >= 3 && r < 0.18) kind = 'truck';
       else if (r < 0.35) kind = this.rng.pick(['barrier', 'cone', 'hole']);
       this.spawnObstacle(lane, z, kind);
+      spawned++;
+    }
+
+    if (spawned >= 2) {
+      this.breathRemaining = Math.max(this.breathRemaining, CONFIG.spawn.breathAfterAttack);
+      this.spawnTimers.attack = Math.max(
+        this.spawnTimers.attack,
+        CONFIG.spawn.attackDelayAfterDouble,
+      );
     }
   }
 
@@ -1233,7 +1297,20 @@ export class GameScene extends Phaser.Scene {
     );
     if (!unlocked.length) return false;
 
-    if (unlocked.includes('fromBehind') && this.rng.chance(0.18)) {
+    const motoSlots = MAX_MOTO_FOES - this.countMotoFoes();
+    const motoPool = (['depression', 'peur'] as const).filter(
+      (f) => unlocked.includes(f) && motoSlots > 0,
+    );
+
+    // Priorité ennemis moto (~60 % si disponibles)
+    if (motoPool.length && this.rng.chance(0.6)) {
+      const kind = this.rng.pick([...motoPool]);
+      if (kind === 'depression') this.spawnDepression();
+      else this.spawnPeur();
+      return true;
+    }
+
+    if (unlocked.includes('fromBehind') && this.rng.chance(0.12)) {
       this.spawnFromBehind();
       return true;
     }
@@ -1244,6 +1321,7 @@ export class GameScene extends Phaser.Scene {
 
     switch (type) {
       case 'depression':
+        if (this.countMotoFoes() >= MAX_MOTO_FOES) return false;
         this.spawnDepression();
         break;
       case 'calomnie':
@@ -1253,6 +1331,7 @@ export class GameScene extends Phaser.Scene {
         this.spawnColere();
         break;
       case 'peur':
+        if (this.countMotoFoes() >= MAX_MOTO_FOES) return false;
         this.spawnPeur();
         break;
       case 'doute':
@@ -1317,27 +1396,59 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnDepression(): void {
-    const free = this.freeLanes([]);
-    if (free.length < 1) return;
+    this.spawnMotoFoes('depression', 'DÉPRESSION', '#ce93d8');
+  }
+
+  /** 1 ou 2 ennemis moto (jamais 3). Restent au niveau joueur jusqu’à 2 coups latéraux. */
+  private spawnMotoFoes(
+    kind: 'depression' | 'peur',
+    label: string,
+    color: string,
+  ): void {
+    const slots = MAX_MOTO_FOES - this.countMotoFoes();
+    if (slots <= 0) return;
+
+    // Si le couloir est déjà chargé (2 voies dangereuses), 1 moto max
+    const nearBlocked = this.currentOccupants().filter(
+      (o) => o.role === 'danger' && o.z <= CONFIG.spawn.motoClearanceZ,
+    );
+    const nearLaneCount = new Set(nearBlocked.map((o) => o.lane)).size;
+    const desired =
+      slots >= 2 && nearLaneCount < 2 && this.rng.chance(0.5) ? 2 : 1;
+
     const z = this.spawnZ();
-    const lanes = chooseObstacleLanes(
-      getTier(this.collected.size),
+    const lanes = pickMotoSpawnLanes(
       this.lane,
       this.activeClosedLane(),
       this.currentOccupants(),
-      z,
-      this.scrollSpeed,
+      desired,
       this.rng,
     );
-    const lane = lanes?.[0] ?? this.rng.pick(free);
-    const sprite = this.add.image(0, 0, textureKey('depression', this)).setAlpha(0.92);
-    applyWorldDisplayForKey(sprite, 'depression');
-    rememberBaseDisplay(sprite);
-    const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'depression', hit: false, logicalKey: 'depression' };
-    this.layoutEntity(ent);
-    const p = this.world.proj.project(lane, Math.min(z, 160));
-    this.showDirectionalWarn(p.x, p.y, 'DÉPRESSION', '#ce93d8');
-    this.entities.push(ent);
+    if (!lanes.length) return;
+
+    for (const lane of lanes) {
+      if (this.laneBusyNear(lane, z, 120)) continue;
+      const sprite = this.add.image(0, 0, textureKey(kind === 'peur' ? 'peur' : 'depression', this));
+      if (kind === 'depression') sprite.setAlpha(0.95);
+      applyWorldDisplayForKey(sprite, kind);
+      rememberBaseDisplay(sprite);
+      const ent: LaneEntity = {
+        sprite,
+        lane,
+        worldZ: z,
+        kind,
+        hit: false,
+        logicalKey: kind,
+        sideHits: 0,
+        ramIFrames: 0,
+        holdAtPlayer: true,
+        shootCooldown: MOTO_SHOOT_FIRST_DELAY,
+      };
+      this.layoutEntity(ent);
+      const p = this.world.proj.project(lane, Math.min(z, 160));
+      this.showDirectionalWarn(p.x, p.y, label, color);
+      this.entities.push(ent);
+    }
   }
 
   private spawnCalomnie(): void {
@@ -1361,34 +1472,14 @@ export class GameScene extends Phaser.Scene {
       x: fromLeft ? left + 36 : right - 36,
       duration: 500 / scaleNow(),
       onComplete: () => {
+        // 3 tirs : chacun choisit une voie (identique ou différente) et y reste
         for (let i = 0; i < 3; i++) {
-          this.time.delayedCall((i * 320) / scaleNow(), () => {
+          this.time.delayedCall((i * 380) / scaleNow(), () => {
             if (!this.playing || this.paused) return;
-            const proj = this.add
-              .image(attacker.x, attacker.y, textureKey('projectile', this))
-              .setDepth(DEPTH.fx);
-            applyWorldDisplayForKey(proj, 'projectile');
-            const targetLane = this.rng.int(0, 2);
-            const vx = (fromLeft ? 180 : -180) * scaleNow();
-            this.entities.push({
-              sprite: proj,
-              lane: targetLane,
-              worldZ: 0,
-              kind: 'projectile',
-              hit: false,
-              vx,
-              screenSpace: true,
-              logicalKey: 'projectile',
-            });
-            this.tweens.add({
-              targets: proj,
-              y: this.player.y - 10 + this.rng.float(-20, 20),
-              x: this.world.proj.laneScreenX(targetLane),
-              duration: 950 / scaleNow(),
-            });
+            this.fireCalomnieShot();
           });
         }
-        this.time.delayedCall(1400 / scaleNow(), () => {
+        this.time.delayedCall(1600 / scaleNow(), () => {
           this.tweens.add({
             targets: attacker,
             x: fromLeft ? left - 40 : right + 40,
@@ -1400,20 +1491,37 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /** Projectile calomnie : une voie aléatoire, approche comme un obstacle (pas de traverse). */
+  private fireCalomnieShot(): void {
+    const targetLane = this.rng.int(0, 2);
+    const z = Math.min(this.world.proj.maxZ * 0.72, Math.max(140, this.spawnZ() * 0.62));
+    const sprite = this.add.image(0, 0, textureKey('projectile', this));
+    applyWorldDisplayForKey(sprite, 'projectile');
+    rememberBaseDisplay(sprite);
+    const ent: LaneEntity = {
+      sprite,
+      lane: targetLane,
+      worldZ: z,
+      kind: 'projectile',
+      hit: false,
+      logicalKey: 'projectile',
+      // world-space → collise uniquement sur sa voie
+    };
+    this.layoutEntity(ent);
+    this.entities.push(ent);
+    const p = this.world.proj.project(targetLane, z);
+    this.showDirectionalWarn(p.x, Math.min(p.y, this.H * 0.42), '!', '#ea80fc');
+  }
+
   private spawnColere(): void {
-    const free = this.freeLanes([]);
+    const free = this.freeLanes(this.motoFoeLanes());
     if (!free.length) return;
     const z = this.spawnZ();
-    const dangerLane =
-      chooseObstacleLanes(
-        getTier(this.collected.size),
-        this.lane,
-        this.activeClosedLane(),
-        this.currentOccupants(),
-        z,
-        this.scrollSpeed,
-        this.rng,
-      )?.[0] ?? this.rng.pick(free);
+    const dangerLane = free.includes(this.lane)
+      ? this.rng.chance(0.55)
+        ? this.lane
+        : this.rng.pick(free)
+      : this.rng.pick(free);
     const sprite = this.add.image(0, 0, textureKey('colere', this));
     applyWorldDisplayForKey(sprite, 'colere');
     rememberBaseDisplay(sprite);
@@ -1434,26 +1542,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnPeur(): void {
-    const free = this.freeLanes([]);
-    if (!free.length) return;
-    const lane = this.rng.pick(free);
-    const z = 130;
-    const p = this.world.proj.project(lane, z);
-    const warn = this.add
-      .text(p.x, p.y, '⚠ PEUR', { fontSize: '16px', color: '#ffeb3b', fontFamily: 'Orbitron' })
-      .setOrigin(0.5)
-      .setDepth(DEPTH.fx);
-    this.tweens.add({ targets: warn, alpha: 0.35, duration: 220, yoyo: true, repeat: 4 });
-    this.time.delayedCall(CONFIG.fear.warningDuration * 1000, () => {
-      warn.destroy();
-      if (!this.scene.isActive('Game') || !this.playing) return;
-      const sprite = this.add.image(0, 0, textureKey('peur', this));
-      applyWorldDisplayForKey(sprite, 'peur');
-      rememberBaseDisplay(sprite);
-      const ent: LaneEntity = { sprite, lane, worldZ: z, kind: 'peur', hit: false, life: 2.5, logicalKey: 'peur' };
-      this.layoutEntity(ent);
-      this.entities.push(ent);
-    });
+    this.spawnMotoFoes('peur', 'PEUR', '#ffeb3b');
   }
 
   private spawnDoute(): void {
@@ -1585,7 +1674,7 @@ export class GameScene extends Phaser.Scene {
       const e = this.entities[i];
       const sp = e.sprite as Phaser.GameObjects.Image;
 
-      if (e.screenSpace || e.kind === 'projectile') {
+      if (e.screenSpace) {
         if (e.kind === 'projectile') {
           sp.x += (e.vx ?? 0) * dt;
         }
@@ -1593,14 +1682,32 @@ export class GameScene extends Phaser.Scene {
         e.worldZ += (this.scrollSpeed * 0.55 + 70) * dt;
         e.life = (e.life ?? 3) - dt;
         this.layoutEntity(e);
-      } else if (e.kind === 'peur') {
-        e.worldZ -= this.scrollSpeed * 0.45 * dt;
-        if (e.lane < this.lane && Math.random() < dt * 2) e.lane++;
-        if (e.lane > this.lane && Math.random() < dt * 2) e.lane--;
-        e.life = (e.life ?? 2) - dt;
+      } else if (e.holdAtPlayer && isRammableEnemyKind(e.kind)) {
+        // Approche puis reste exactement à la hauteur écran du joueur
+        if (e.worldZ > MOTO_HOLD_Z) {
+          e.worldZ -= this.scrollSpeed * 1.15 * dt;
+          if (e.worldZ < MOTO_HOLD_Z) e.worldZ = MOTO_HOLD_Z;
+        } else {
+          e.worldZ = MOTO_HOLD_Z;
+        }
+        if (e.ramIFrames && e.ramIFrames > 0) {
+          e.ramIFrames = Math.max(0, e.ramIFrames - dt);
+        }
         this.layoutEntity(e);
+        // Verrouille le Y écran sur le joueur (même hauteur visuelle)
+        if (e.worldZ <= MOTO_HOLD_Z + 0.5) {
+          sp.y = this.player.y;
+          sp.setDepth(DEPTH.player - 1);
+          // Tir périodique comme la calomnie (sorcier)
+          this.tickMotoShoot(e, sp, dt);
+        }
       } else {
-        e.worldZ -= this.scrollSpeed * dt;
+        // Projectiles de voie (calomnie) un peu plus rapides que le scroll
+        const mul =
+          e.kind === 'projectile' && !e.screenSpace
+            ? 1.35 * getThreatTimeScale(this.hasEffect('slowmo'))
+            : 1;
+        e.worldZ -= this.scrollSpeed * mul * dt;
         this.layoutEntity(e);
       }
 
@@ -1631,7 +1738,7 @@ export class GameScene extends Phaser.Scene {
         }
       }
 
-      if (e.kind === 'peur' && (e.life ?? 0) <= 0) {
+      if (e.kind === 'peur' && !e.holdAtPlayer && (e.life ?? 0) <= 0) {
         this.destroyEntity(i);
         continue;
       }
@@ -1642,7 +1749,8 @@ export class GameScene extends Phaser.Scene {
       }
 
       // hors champ : z passé + bounds écran (ou z très négatif)
-      if (!e.screenSpace) {
+      // Ennemis moto en hold : ne despawnent pas tant qu’ils ne sont pas battus
+      if (!e.screenSpace && !(e.holdAtPlayer && isRammableEnemyKind(e.kind))) {
         if (e.worldZ < 0) {
           const b = sp.getBounds();
           const off =
@@ -1716,7 +1824,7 @@ export class GameScene extends Phaser.Scene {
   ): boolean {
     const to = this.getEntityHitRect(e, sp);
 
-    if (e.screenSpace || e.kind === 'projectile') {
+    if (e.screenSpace) {
       const prevX = sp.getData('prevHitX') as number | undefined;
       const prevY = sp.getData('prevHitY') as number | undefined;
       let hit: boolean;
@@ -1733,6 +1841,7 @@ export class GameScene extends Phaser.Scene {
 
     const laneOk =
       Math.round(e.lane) === this.lane ||
+      (isRammableEnemyKind(e.kind) && Math.abs(Math.round(e.lane) - this.lane) <= 1) ||
       (this.laneTween?.isPlaying() === true && Math.abs(Math.round(e.lane) - this.lane) <= 1);
     if (!laneOk) {
       sp.setData('prevHitX', sp.x);
@@ -1791,35 +1900,86 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handlePickupOrHit(e: LaneEntity, index: number): void {
-    e.hit = true;
+    if (e.hit) return; // une seule résolution finale par ennemi / entité
     const sp = e.sprite as Phaser.GameObjects.Image;
 
     if (e.kind === 'equipment' && e.equipmentId) {
+      e.hit = true;
       this.collectEquipment(e.equipmentId, sp.x, sp.y);
       this.destroyEntity(index);
       return;
     }
     if (e.kind === 'bonus' && e.bonusId) {
+      e.hit = true;
       this.collectBonus(e.bonusId, sp.x, sp.y);
       this.destroyEntity(index);
       return;
     }
     if (e.kind === 'love') {
+      e.hit = true;
       this.collectLove(sp.x, sp.y);
       this.destroyEntity(index);
       return;
     }
     if (e.kind === 'doute' || e.isDoubt) {
-      // leurre — pas de dégât, disparaît avec feedback
-      this.showToast('Doute dissipé', '#90a4ae');
+      e.hit = true;
+      this.doubtsCleared += 1;
+      this.runScore += SCORE.perDoubt;
+      this.refreshHudScore();
+      this.showToast(`Doute dissipé +${SCORE.perDoubt}`, '#90a4ae');
       audio.ui();
       this.burst(sp.x, sp.y, 0x90a4ae);
       this.destroyEntity(index);
       return;
     }
 
-    // damage
-    this.takeHit(sp.x, sp.y);
+    // Percussion moto : 2 coups latéraux pour vaincre ; arrière = joueur touché
+    if (isRammableEnemyKind(e.kind)) {
+      if ((e.ramIFrames ?? 0) > 0) return;
+      const playerHit = this.getPlayerHitRect();
+      const enemyHit = this.getEntityHitRect(e, sp);
+      const ram = classifyEnemyRam(playerHit, enemyHit);
+      if (ram === 'side_left' || ram === 'side_right') {
+        e.sideHits = (e.sideHits ?? 0) + 1;
+        e.ramIFrames = MOTO_RAM_IFRAMES;
+        // Rebond : revenir sur la voie d’avant l’attaque (évite de rester sur la moto)
+        this.snapToPreviousLane(Math.round(e.lane));
+        if (sideHitDefeats(e.sideHits)) {
+          e.hit = true;
+          this.defeatEnemy(e, index, ram);
+          return;
+        }
+        this.showToast(
+          `Impact ${e.sideHits}/${MOTO_SIDE_HITS_TO_DEFEAT}`,
+          '#ffd54f',
+        );
+        audio.ui();
+        this.burst(sp.x, sp.y, 0xffd54f);
+        sp.setTint(0xffab40);
+        this.time.delayedCall(180, () => {
+          if (sp.active) sp.clearTint();
+        });
+        return;
+      }
+      // rear → dégâts joueur
+      e.hit = true;
+      this.takeHit(sp.x, sp.y, Math.round(e.lane));
+      this.destroyEntity(index);
+      return;
+    }
+
+    e.hit = true;
+    // damage (obstacles, etc.)
+    this.takeHit(sp.x, sp.y, Math.round(e.lane));
+    this.destroyEntity(index);
+  }
+
+  private defeatEnemy(e: LaneEntity, index: number, side: 'side_left' | 'side_right'): void {
+    const sp = e.sprite as Phaser.GameObjects.Image;
+    this.obstaclesAvoided++;
+    this.showToast(side === 'side_left' ? 'Percuté à gauche !' : 'Percuté à droite !', '#69f0ae');
+    audio.ui();
+    this.burst(sp.x, sp.y, 0x69f0ae);
     this.destroyEntity(index);
   }
 
@@ -1900,7 +2060,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private takeHit(x: number, y: number): void {
+  private takeHit(x: number, y: number, hitLane?: number): void {
     if (this.invincibleRemaining > 0) return;
     if (this.hasEffect('love')) return;
     if (this.hasEffect('boost') && CONFIG.effects.boostProtects) return;
@@ -1922,10 +2082,44 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.shake(180, 0.01);
     this.invincibleRemaining = CONFIG.player.invincibilityDuration;
     this.showToast('Touchée !', '#ff5252');
+    // Recul sur la voie d’avant le choc — pas sur l’obstacle
+    this.snapToPreviousLane(hitLane);
 
     if (this.lives <= 0) {
       this.endGame(false);
     }
+  }
+
+  /**
+   * Revient sur la voie précédente (avant le dernier changement).
+   * Utilisé au choc (obstacle) ET après une attaque latérale sur moto ennemie.
+   * Évite la voie de l’obstacle/ennemi / voie fermée pour ne pas enchaîner les hits.
+   */
+  private snapToPreviousLane(avoidLane?: number): void {
+    const closed = this.activeClosedLane();
+    let target = this.previousLane;
+
+    const blocked = (l: number) =>
+      l === avoidLane || (closed !== null && l === closed);
+
+    if (blocked(target) || target === this.lane) {
+      // Première voie libre adjacente / disponible
+      const candidates = [this.previousLane, this.lane - 1, this.lane + 1, 0, 1, 2].filter(
+        (l, i, arr) => l >= 0 && l < LANES && arr.indexOf(l) === i,
+      );
+      target = candidates.find((l) => !blocked(l)) ?? this.lane;
+    }
+
+    if (this.laneTween) {
+      this.laneTween.stop();
+      this.laneTween = null;
+    }
+    this.tweens.killTweensOf(this.player);
+    this.previousLane = this.lane;
+    this.lane = target;
+    this.targetX = this.world.proj.laneScreenX(target);
+    this.player.x = this.targetX;
+    this.playerSprite.setAngle(0);
   }
 
   private tickInvincibility(): void {
@@ -1980,7 +2174,7 @@ export class GameScene extends Phaser.Scene {
     this.debugText.setText(
       [
         `DBG seed=${this.runSeed ?? 'rand'} t=${this.simTime.toFixed(1)}s hitboxes ON`,
-        `tier=${tier} spd=${this.scrollSpeed.toFixed(0)} eq=${this.collected.size}/7`,
+        `diff=${this.difficulty.id} tier=${tier} spd=${this.scrollSpeed.toFixed(0)} eq=${this.collected.size}/7`,
         `lane=${this.lane} hit=${this.playerHitbox.w.toFixed(0)}x${this.playerHitbox.h.toFixed(0)} motoOcc=${LANE_OCCUPANCY.motorcycle}`,
         `pw=${this.layout.playerDisplayWidth.toFixed(0)}/${this.layout.laneWidthNear.toFixed(0)}`,
         `game=${this.W}x${this.H} enti=${this.entities.length}`,
@@ -2090,10 +2284,22 @@ export class GameScene extends Phaser.Scene {
     this.setPauseMenuInteractive(false);
     this.cameras.main.setAngle(0);
 
+    const scored = computeRunScore({
+      distance: this.distance,
+      doubts: this.doubtsCleared,
+      avoided: this.obstaclesAvoided,
+      equipment: this.collected.size,
+      love: this.loveCollected,
+      won,
+    });
+    this.runScore = scored.total;
+
     Storage.addScore({
       distance: Math.floor(this.distance),
       equipment: this.collected.size,
       love: this.loveCollected,
+      score: scored.total,
+      grade: scored.grade,
       date: new Date().toISOString(),
     });
 
@@ -2107,10 +2313,68 @@ export class GameScene extends Phaser.Scene {
       love: this.loveCollected,
       distance: Math.floor(this.distance),
       avoided: this.obstaclesAvoided,
+      doubts: this.doubtsCleared,
+      score: scored.total,
+      grade: scored.grade,
+      gradeLabel: scored.gradeLabel,
     };
 
     this.time.delayedCall(600, () => {
       this.scene.start(won ? 'Victory' : 'GameOver', payload);
+    });
+  }
+
+  private refreshHudScore(): void {
+    const live = computeRunScore({
+      distance: this.distance,
+      doubts: this.doubtsCleared,
+      avoided: this.obstaclesAvoided,
+      equipment: this.collected.size,
+      love: this.loveCollected,
+      won: false,
+    });
+    this.runScore = live.total;
+    this.hudDist.setText(`${Math.floor(this.distance)} M · ${live.total} pts`);
+  }
+
+  /**
+   * Tir périodique des motos ennemies au hold — même type de projectile que la calomnie.
+   */
+  private tickMotoShoot(e: LaneEntity, sp: Phaser.GameObjects.Image, dt: number): void {
+    if (!this.playing || this.paused || e.hit) return;
+    e.shootCooldown = (e.shootCooldown ?? MOTO_SHOOT_INTERVAL) - dt;
+    if (e.shootCooldown > 0) return;
+    e.shootCooldown = MOTO_SHOOT_INTERVAL;
+    this.fireMotoProjectile(e, sp);
+  }
+
+  private fireMotoProjectile(e: LaneEntity, sp: Phaser.GameObjects.Image): void {
+    const scaleNow = () => getThreatTimeScale(this.hasEffect('slowmo'));
+    const targetLane = this.lane;
+    const fromX = sp.x;
+    const fromY = sp.y - 18;
+    const toX = this.world.proj.laneScreenX(targetLane);
+    const toY = this.player.y - 8;
+    const proj = this.add.image(fromX, fromY, textureKey('projectile', this)).setDepth(DEPTH.fx);
+    applyWorldDisplayForKey(proj, 'projectile');
+    const dx = toX - fromX;
+    const duration = 900 / scaleNow();
+    const vx = dx / Math.max(0.35, duration / 1000);
+    this.entities.push({
+      sprite: proj,
+      lane: targetLane,
+      worldZ: 0,
+      kind: 'projectile',
+      hit: false,
+      vx,
+      screenSpace: true,
+      logicalKey: 'projectile',
+    });
+    this.tweens.add({
+      targets: proj,
+      x: toX,
+      y: toY,
+      duration,
     });
   }
 

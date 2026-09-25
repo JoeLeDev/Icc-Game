@@ -46,6 +46,7 @@ export interface LayoutMetrics {
   worldObstacleScale: number;
   propLampHeight: number;
   propPalmHeight: number;
+  propTreeHeight: number;
   /** @deprecated alias de buildingNearHeight — référence premier plan */
   buildingBaseHeight: number;
   /** Hauteur bâtiment au premier plan (peut > viewport) */
@@ -324,6 +325,7 @@ export function computeLayout(
     worldObstacleScale: obstacleScale,
     propLampHeight: clamp(bh * 0.155, 100, 155),
     propPalmHeight: clamp(bh * 0.2, 120, 190),
+    propTreeHeight: clamp(bh * 0.22, 130, 200),
     // Murs de ville imposants mais coherents avec palm/lamp (~430–560 @ 1440×900)
     buildingNearHeight: clamp(bh * 0.55, 430, 560),
     buildingFarHeight: clamp(bh * 0.07, 48, 72),

@@ -1,13 +1,12 @@
 import type { LayoutMetrics } from '../config/responsiveLayout';
+import { projectYContinuous, roadHalfFromScreenY } from '../config/continuousProjection';
 import { PASSED_EXIT_SPAN, passedExitT } from '../config/roadsideLifecycle';
 
 /** Projection route pseudo-3D : logique (lane, z) ↔ écran */
 export class RoadProjection {
   horizonY = 253;
   playerY = 658;
-  /** Bas du viewport navigateur (sortie PASSED) */
   viewportBottom = 844;
-  /** Profondeur visible max (unités monde) */
   maxZ = 420;
   nearRoadHalf = 156;
   farRoadHalf = 21.45;
@@ -22,65 +21,87 @@ export class RoadProjection {
     this.centerX = L.centerX;
   }
 
-  /** t∈[0,1] : 0 = joueuse, 1 = horizon — clampé (gameplay / approach) */
+  /**
+   * Foreshortening pour SCALE uniquement (pas pour Y ni largeur de route).
+   */
   depthT(z: number): number {
     const t = Math.max(0, Math.min(1, z / this.maxZ));
     return t * t;
   }
 
+  /**
+   * Demi-largeur pour GAMEPLAY / largeur de voie.
+   * z < 0 : figée (les lanes ne s’éjectent pas hors écran).
+   */
   roadHalfAt(z: number): number {
-    // PASSED : geler la demi-route au plan joueur (pas d’éjection latérale)
     if (z < 0) return this.nearRoadHalf;
-    const t = this.depthT(z);
-    return this.nearRoadHalf + (this.farRoadHalf - this.nearRoadHalf) * t;
+    return roadHalfFromScreenY(
+      this.projectY(z),
+      this.horizonY,
+      this.playerY,
+      this.nearRoadHalf,
+      this.farRoadHalf,
+    );
+  }
+
+  /**
+   * Demi-largeur DÉCOR — continue à croître après le plan joueur (Y↓).
+   * Corrige le retour vers le centre en PASSED.
+   */
+  decorRoadHalfAt(z: number): number {
+    return roadHalfFromScreenY(
+      this.projectY(z),
+      this.horizonY,
+      this.playerY,
+      this.nearRoadHalf,
+      this.farRoadHalf,
+    );
   }
 
   laneSpacingAt(z: number): number {
     return (this.roadHalfAt(Math.max(0, z)) * 2) / 3;
   }
 
-  /**
-   * Projection gameplay (voies).
-   * z < 0 est clampé pour ne pas figer les hitboxes au plan joueur.
-   */
+  /** Y écran continu (approche → joueur → passed), sans freinage à z=0 */
+  projectY(z: number): number {
+    return projectYContinuous(z, this.maxZ, this.horizonY, this.playerY);
+  }
+
   project(lane: number, z: number): { x: number; y: number; scale: number; t: number } {
-    const zClamped = Math.max(0, z);
-    const t = this.depthT(zClamped);
-    const y = this.playerY + (this.horizonY - this.playerY) * t;
-    const scale = 1 + (0.11 - 1) * t;
-    const spacing = this.laneSpacingAt(zClamped);
+    const zForScale = Math.max(0, z);
+    const t = this.depthT(zForScale);
+    const y = this.projectY(z);
+    // Scale : foreshortening + légère croissance après le plan joueur
+    let scale = 1 + (0.11 - 1) * t;
+    if (z < 0) {
+      scale = 1 + Math.min(0.45, passedExitT(z, PASSED_EXIT_SPAN) * 0.25);
+    }
+    const spacing = this.laneSpacingAt(zForScale);
     const x = this.centerX + (lane - 1) * spacing;
     return { x, y, scale: Math.max(0.08, scale), t };
   }
 
   /**
-   * Projection décor roadside — autorise z < 0 (PASSED).
-   * Sortie principale = BAS. X = perspective naturelle figée au plan joueur (pas de push outward).
+   * Décor roadside — Y continue + roadHalf qui CONTINUE à croître en PASSED
+   * (même formule qu’en approche, extrapolée sous playerY).
    */
   projectDecor(z: number): { y: number; roadHalf: number; t: number; exitT: number } {
+    const y = this.projectY(z);
+    const roadHalf = this.decorRoadHalfAt(z);
     if (z >= 0) {
-      const t = this.depthT(z);
-      return {
-        y: this.playerY + (this.horizonY - this.playerY) * t,
-        roadHalf: this.roadHalfAt(z),
-        t,
-        exitT: 0,
-      };
+      return { y, roadHalf, t: this.depthT(z), exitT: 0 };
     }
-    const exitT = passedExitT(z, PASSED_EXIT_SPAN);
-    // Descend sous le plan joueur ; roadHalf figé → pas d’éjection latérale
-    const y = this.playerY + exitT * (this.viewportBottom - this.playerY + 160);
-    return { y, roadHalf: this.nearRoadHalf, t: 0, exitT };
+    return {
+      y,
+      roadHalf,
+      t: 0,
+      exitT: passedExitT(z, PASSED_EXIT_SPAN),
+    };
   }
 
-  /** Sortie visuelle douce d’une entité gameplay après le plan joueur */
+  /** Même trajectoire continue que project() pour les entités gameplay */
   projectPast(lane: number, z: number): { x: number; y: number; scale: number; t: number } {
-    if (z >= 0) return this.project(lane, z);
-    const exitT = passedExitT(z, PASSED_EXIT_SPAN);
-    const base = this.project(lane, 0);
-    const y = this.playerY + exitT * (this.viewportBottom - this.playerY + 80);
-    const scale = base.scale * (1 + Math.min(0.8, exitT) * 0.35);
-    return { x: base.x, y, scale, t: 0 };
+    return this.project(lane, z);
   }
 
   laneScreenX(lane: number): number {

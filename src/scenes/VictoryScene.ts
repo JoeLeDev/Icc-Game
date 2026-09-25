@@ -16,6 +16,10 @@ interface EndData {
   love: boolean;
   distance: number;
   avoided: number;
+  doubts?: number;
+  score?: number;
+  grade?: string;
+  gradeLabel?: string;
 }
 
 export class VictoryScene extends Phaser.Scene {
@@ -30,8 +34,6 @@ export class VictoryScene extends Phaser.Scene {
     setCurrentLayout(layout);
 
     this.add.rectangle(0, 0, W, H, 0x120828, 1).setOrigin(0);
-    // celebratory glow
-    this.add.circle(W / 2, H * 0.24, 120, 0xff2d95, 0.15);
     const moto = this.add.image(W / 2, H * 0.24, 'player');
     applyDisplayWidth(moto, layout.victoryPlayerWidth, layout.playerDisplayHeightMax * 1.3);
 
@@ -48,15 +50,33 @@ export class VictoryScene extends Phaser.Scene {
     this.add
       .text(
         W / 2,
-        400,
-        `${data.distance} m  ·  ${data.equipment}/7  ·  ${data.avoided} esquivés`,
+        390,
+        `Note ${data.grade ?? '—'} — ${data.gradeLabel ?? ''}`,
+        { fontFamily: 'Orbitron', fontSize: '18px', color: '#ffd54f' },
+      )
+      .setOrigin(0.5);
+
+    this.add
+      .text(
+        W / 2,
+        420,
+        `${data.score ?? 0} pts  ·  ${data.distance} m  ·  ${data.equipment}/7`,
         { fontFamily: 'Outfit', fontSize: '13px', color: '#ce93d8' },
+      )
+      .setOrigin(0.5);
+
+    this.add
+      .text(
+        W / 2,
+        445,
+        `${data.avoided} esquivés  ·  ${data.doubts ?? 0} doutes dissipés`,
+        { fontFamily: 'Outfit', fontSize: '12px', color: '#b39ddb' },
       )
       .setOrigin(0.5);
 
     const best = Storage.getBestDistance();
     this.add
-      .text(W / 2, 425, `Record local : ${best} m`, {
+      .text(W / 2, 470, `Record local : ${best} m`, {
         fontFamily: 'Outfit',
         fontSize: '12px',
         color: '#9e9e9e',
@@ -68,7 +88,7 @@ export class VictoryScene extends Phaser.Scene {
       const col = i % 4;
       const row = Math.floor(i / 4);
       const x = 70 + col * 80;
-      const y = 480 + row * 60;
+      const y = 510 + row * 52;
       const got = data.collected.includes(eq.id);
       const icon = this.add.image(x, y, `eq-icon-${eq.id}`).setAlpha(got ? 1 : 0.25);
       applyDisplayBox(icon, layout.hudIconSize * 1.35);
@@ -87,10 +107,10 @@ export class VictoryScene extends Phaser.Scene {
       }
     });
     if (data.love) {
-      const love = this.add.image(W / 2 + 120, 540, 'love');
+      const love = this.add.image(W / 2 + 120, 560, 'love');
       applyDisplayBox(love, layout.worldLoveSize);
       this.add
-        .text(W / 2 + 120, 575, 'Amour', {
+        .text(W / 2 + 120, 590, 'Amour', {
           fontFamily: 'Outfit',
           fontSize: '11px',
           color: '#ff80ab',
@@ -98,7 +118,7 @@ export class VictoryScene extends Phaser.Scene {
         .setOrigin(0.5);
     }
 
-    this.btn(W / 2, 660, 'PARTAGER MON RÉSULTAT', async () => {
+    this.btn(W / 2, 655, 'PARTAGER MON RÉSULTAT', async () => {
       audio.ui();
       const text = formatShareText({
         won: true,
@@ -112,12 +132,12 @@ export class VictoryScene extends Phaser.Scene {
       else if (r === 'cancelled') this.feedback('Partage annulé');
     });
 
-    this.btn(W / 2, 720, 'REJOUER', () => {
+    this.btn(W / 2, 710, 'REJOUER', () => {
       audio.ui();
       this.scene.start('Game');
     }, 0x2a1050);
 
-    this.btn(W / 2, 775, 'ACCUEIL', () => {
+    this.btn(W / 2, 760, 'ACCUEIL', () => {
       audio.ui();
       this.scene.start('Menu');
     }, 0x1a0a30);

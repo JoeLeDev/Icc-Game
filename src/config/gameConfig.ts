@@ -1,5 +1,8 @@
 /** Configuration centralisée — Khayil 2026 (rééquilibrage casual) */
 
+import type { DifficultyId, DifficultyPreset } from './difficulty';
+import { DEFAULT_DIFFICULTY, getDifficultyPreset } from './difficulty';
+
 export const GAME_W = 390;
 export const GAME_H = 844;
 /** Ratio logique du jeu (utilisé aussi côté CSS) */
@@ -59,14 +62,14 @@ export const CONFIG = {
 
   spawn: {
     /** Intro calme : premiers obstacles espacés */
-    obstacleInterval: [4.2, 3.8, 3.4, 3.0, 2.6, 2.3, 2.0, 1.75],
+    obstacleInterval: [2.2, 2.1, 2.0, 1.9, 1.8, 1.7, 1.6, 1.5],
     /** ~7 équipements répartis sur ~90–130 s si peu de ratés */
     equipmentInterval: [15, 14.5, 14, 13.5, 13, 12.5, 12, 99],
     /** Délai avant le 1er équipement (apprentissage déplacement) */
-    firstEquipmentDelay: 9,
-    bonusInterval: [18, 17, 16, 15, 14, 13, 12, 14],
-    /** Attaques absentes en tier 0–1 (99 = désactivé) */
-    attackInterval: [99, 99, 18, 15, 13, 11, 9.5, 8],
+    firstEquipmentDelay: 7,
+    bonusInterval: [8, 7.5, 7, 6.5, 6, 5.5, 5, 4.5],
+    /** Attaques — démarrage plus tôt, cadence plus élevée (ennemis moto) */
+    attackInterval: [99, 5, 4.5, 4, 3.5, 3, 2.5, 2],
     loveChance: 0.028,
     minGapFront: 200,
     /** Temps de réaction joueur avant la zone dangereuse */
@@ -74,18 +77,32 @@ export const CONFIG = {
     /** Marge de sécurité en unités monde autour d’un spawn */
     safetyBand: 95,
     /** Respiration après une attaque (ralentit obstacle + prochaine attaque) */
-    breathAfterAttack: 2.8,
-    /** Chance de pattern 2 voies (seulement si path reachable) */
-    doubleBlockChance: [0, 0, 0.05, 0.1, 0.14, 0.18, 0.22, 0.25],
+    breathAfterAttack: 1.5,
+    /** Chance de pattern 2 voies (jamais 3) — plus agressif pour la difficulté */
+    doubleBlockChance: [0.12, 0.18, 0.28, 0.36, 0.42, 0.48, 0.52, 0.55],
+    /**
+     * @deprecated Préférer ObstacleLaneDistributor + ciblage joueur.
+     * Conservé pour compat tests legacy — valeur neutre.
+     */
+    middleLaneBias: 1 / 3,
+    maxSpawnsWithoutMiddle: 3,
+    playerLaneTargetChance: 0.45,
+    /**
+     * Obstacles / dangers plus proches que ce Z bloquent le spawn moto sur leur voie
+     * et réservent toujours 1 voie d’échappatoire.
+     */
+    motoClearanceZ: 260,
+    /** Après un double obstacle : délai mini avant prochaine attaque moto (s) */
+    attackDelayAfterDouble: 2.8,
   },
 
   /** Déblocage progressif des familles d’attaques */
   attackUnlock: {
-    doute: { minTier: 1, minTime: 22 },
-    depression: { minTier: 2, minTime: 28 },
-    calomnie: { minTier: 2, minTime: 40 },
-    colere: { minTier: 3, minTime: 55 },
-    peur: { minTier: 3, minTime: 62 },
+    doute: { minTier: 1, minTime: 18 },
+    depression: { minTier: 1, minTime: 14 },
+    calomnie: { minTier: 2, minTime: 36 },
+    colere: { minTier: 3, minTime: 50 },
+    peur: { minTier: 2, minTime: 24 },
     reject: { minTier: 4, minTime: 72 },
     distraction: { minTier: 4, minTime: 78 },
     fromBehind: { minTier: 5, minTime: 88 },
@@ -128,6 +145,7 @@ export const CONFIG = {
     bestScoreKey: 'khayil2026_best',
     soundKey: 'khayil2026_sound',
     leaderboardKey: 'khayil2026_local_board',
+    difficultyKey: 'khayil2026_difficulty',
   },
 };
 
@@ -142,16 +160,24 @@ export function getTier(equipmentCount: number): DifficultyTier {
 /**
  * Vitesse de défilement (px/s).
  * Ralenti prioritaire sur boost si les deux sont actifs.
+ * La difficulté multiplie la base puis respecte maxScroll × maxScrollMul.
  */
-export function getScrollSpeed(equipmentCount: number, boost: boolean, slowmo: boolean): number {
-  let speed = CONFIG.speed.base + CONFIG.speed.perEquipment[getTier(equipmentCount)];
+export function getScrollSpeed(
+  equipmentCount: number,
+  boost: boolean,
+  slowmo: boolean,
+  difficulty: DifficultyId | DifficultyPreset = DEFAULT_DIFFICULTY,
+): number {
+  const preset = typeof difficulty === 'string' ? getDifficultyPreset(difficulty) : difficulty;
+  let speed = (CONFIG.speed.base + CONFIG.speed.perEquipment[getTier(equipmentCount)]) * preset.speedMul;
   if (slowmo && CONFIG.effects.slowmoOverridesBoost) {
     speed *= CONFIG.speed.slowmoMultiplier;
   } else {
     if (boost) speed *= CONFIG.speed.boostMultiplier;
     if (slowmo) speed *= CONFIG.speed.slowmoMultiplier;
   }
-  return Math.min(Math.max(0, speed), CONFIG.speed.maxScroll);
+  const cap = CONFIG.speed.maxScroll * preset.maxScrollMul;
+  return Math.min(Math.max(0, speed), cap);
 }
 
 /** Multiplicateur de vitesse des projectiles / menaces hors scroll (ralenti) */

@@ -25,9 +25,9 @@ describe('roadsideLifecycle — phases', () => {
     expect(roadsidePhase(50, 420)).toBe('NEAR');
   });
 
-  it('scroll plus rapide en PASSED qu’en FAR', () => {
-    expect(roadsideScrollMul('PASSED', 'near')).toBeGreaterThan(roadsideScrollMul('FAR', 'far'));
-    expect(roadsideScrollMul('NEAR', 'near')).toBeGreaterThan(roadsideScrollMul('APPROACHING', 'far'));
+  it('scroll constant par bande (pas de saut de phase)', () => {
+    expect(roadsideScrollMul('PASSED', 'near')).toBe(roadsideScrollMul('FAR', 'near'));
+    expect(roadsideScrollMul('NEAR', 'far')).toBeLessThan(roadsideScrollMul('NEAR', 'near'));
   });
 });
 
@@ -42,17 +42,26 @@ describe('roadsideLifecycle — offscreen', () => {
   });
 });
 
-describe('projectDecor — PASSED sort par le bas sans éjection latérale', () => {
-  it('y augmente et roadHalf reste figé (pas de push outward)', () => {
+describe('projectDecor — PASSED continue Y + roadHalf (pas de freeze centre)', () => {
+  it('y et roadHalf croissent après le plan joueur (sortie bas-extérieur)', () => {
     const L = computeLayout(390, 844, { top: 47, right: 0, bottom: 34, left: 0 });
     const proj = new RoadProjection();
     proj.applyLayout(L);
     const atPlayer = proj.projectDecor(0);
     const passed = proj.projectDecor(-PASSED_EXIT_SPAN);
     expect(passed.y).toBeGreaterThan(atPlayer.y);
-    expect(passed.roadHalf).toBeCloseTo(atPlayer.roadHalf, 5);
+    // roadHalf DOIT croître (sinon retour visuel vers le centre vs trapèze route)
+    expect(passed.roadHalf).toBeGreaterThan(atPlayer.roadHalf);
     expect(passed.exitT).toBeCloseTo(1, 5);
     expect(passedExitT(-45)).toBeCloseTo(45 / PASSED_EXIT_SPAN, 5);
+  });
+
+  it('gameplay roadHalfAt reste figé en z<0 (lanes / obstacles)', () => {
+    const L = computeLayout(390, 844, { top: 47, right: 0, bottom: 34, left: 0 });
+    const proj = new RoadProjection();
+    proj.applyLayout(L);
+    expect(proj.roadHalfAt(-PASSED_EXIT_SPAN)).toBeCloseTo(proj.nearRoadHalf, 5);
+    expect(proj.decorRoadHalfAt(-PASSED_EXIT_SPAN)).toBeGreaterThan(proj.nearRoadHalf);
   });
 
   it('échelle bâtiment quasi figée en PASSED (sortie verticale)', () => {
