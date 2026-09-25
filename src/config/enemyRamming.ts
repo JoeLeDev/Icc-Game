@@ -22,11 +22,131 @@ export const MAX_MOTO_FOES = 2;
 /** I-frames après un coup latéral (évite double comptage) */
 export const MOTO_RAM_IFRAMES = 0.55;
 
-/** Intervalle de tir des motos ennemies une fois au niveau joueur (s) */
-export const MOTO_SHOOT_INTERVAL = 2;
+/**
+ * Profil d’attaque configurable (motos / futurs mobs).
+ * Durées en secondes.
+ */
+export type EnemyAttackProfile = {
+  /** Cooldown offensif de base après un tir */
+  attackCooldown: number;
+  /** Si true : impact joueur réussi → reset cooldown complet */
+  resetAttackCooldownOnHit: boolean;
+  /** Durée du cooldown après reset (souvent = attackCooldown) */
+  hitRecoveryDuration: number;
+  /** Télégraphie avant le tir (annulable par un impact) */
+  windupDuration: number;
+  /** Délai avant le 1er tir après arriver au hold */
+  firstAttackDelay: number;
+};
 
-/** Délai avant le 1er tir après arriver au hold */
-export const MOTO_SHOOT_FIRST_DELAY = 1.2;
+/** Profil moto standard */
+export const MOTO_ATTACK_PROFILE: EnemyAttackProfile = {
+  attackCooldown: 3,
+  resetAttackCooldownOnHit: true,
+  hitRecoveryDuration: 3,
+  windupDuration: 0.35,
+  firstAttackDelay: 1.2,
+};
+
+/** @deprecated Utiliser MOTO_ATTACK_PROFILE.attackCooldown */
+export const MOTO_SHOOT_INTERVAL = MOTO_ATTACK_PROFILE.attackCooldown;
+
+/** @deprecated Utiliser MOTO_ATTACK_PROFILE.firstAttackDelay */
+export const MOTO_SHOOT_FIRST_DELAY = MOTO_ATTACK_PROFILE.firstAttackDelay;
+
+export type EnemyAttackPhase = 'cooldown' | 'windup' | 'idle';
+
+export type EnemyAttackState = {
+  phase: EnemyAttackPhase;
+  /** Secondes restantes dans la phase courante */
+  timer: number;
+  /** Serial du dernier impact ayant reset (anti double-callback) */
+  lastHitSerial: number;
+};
+
+export function createEnemyAttackState(profile: EnemyAttackProfile): EnemyAttackState {
+  return {
+    phase: 'cooldown',
+    timer: profile.firstAttackDelay,
+    lastHitSerial: -1,
+  };
+}
+
+/**
+ * Avance le cooldown / windup.
+ * `shouldFire` = true uniquement à la fin du windup (tir autorisé).
+ * Un projectile déjà tiré n’est pas géré ici.
+ */
+export function tickEnemyAttack(
+  state: EnemyAttackState,
+  profile: EnemyAttackProfile,
+  dt: number,
+): { state: EnemyAttackState; shouldFire: boolean } {
+  if (dt <= 0) return { state, shouldFire: false };
+
+  let phase = state.phase;
+  let timer = state.timer - dt;
+  let shouldFire = false;
+
+  if (phase === 'cooldown' || phase === 'idle') {
+    if (timer <= 0) {
+      if (profile.windupDuration > 0) {
+        phase = 'windup';
+        timer = profile.windupDuration;
+      } else {
+        shouldFire = true;
+        phase = 'cooldown';
+        timer = profile.attackCooldown;
+      }
+    } else {
+      phase = 'cooldown';
+    }
+  } else if (phase === 'windup') {
+    if (timer <= 0) {
+      shouldFire = true;
+      phase = 'cooldown';
+      timer = profile.attackCooldown;
+    }
+  }
+
+  return {
+    state: { ...state, phase, timer },
+    shouldFire,
+  };
+}
+
+/**
+ * Impact offensif réussi du joueur → reset du rythme offensif.
+ * Annule un windup en cours. N’affecte pas un projectile déjà tiré.
+ * `hitSerial` doit être unique par impact valide (anti multi-callback).
+ */
+export function onEnemyReceivedPlayerHit(
+  state: EnemyAttackState,
+  profile: EnemyAttackProfile,
+  hitSerial: number,
+): { state: EnemyAttackState; cancelledWindup: boolean; didReset: boolean } {
+  if (!profile.resetAttackCooldownOnHit) {
+    return { state, cancelledWindup: false, didReset: false };
+  }
+  if (hitSerial === state.lastHitSerial) {
+    return { state, cancelledWindup: false, didReset: false };
+  }
+  const cancelledWindup = state.phase === 'windup';
+  return {
+    state: {
+      phase: 'cooldown',
+      timer: profile.hitRecoveryDuration,
+      lastHitSerial: hitSerial,
+    },
+    cancelledWindup,
+    didReset: true,
+  };
+}
+
+/** True si le cooldown est écoulé (prêt à entrer en windup) */
+export function enemyCanPrepareAttack(state: EnemyAttackState): boolean {
+  return state.phase === 'cooldown' && state.timer <= 0;
+}
 
 /**
  * Seuil normalisé |dx| / (enemy.w/2).

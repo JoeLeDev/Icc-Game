@@ -22,14 +22,17 @@ import {
 import { type DifficultyPreset, getDifficultyPreset } from '../config/difficulty';
 import {
   MAX_MOTO_FOES,
+  MOTO_ATTACK_PROFILE,
   MOTO_HOLD_Z,
   MOTO_RAM_IFRAMES,
-  MOTO_SHOOT_FIRST_DELAY,
-  MOTO_SHOOT_INTERVAL,
   MOTO_SIDE_HITS_TO_DEFEAT,
   classifyEnemyRam,
+  createEnemyAttackState,
   isRammableEnemyKind,
+  onEnemyReceivedPlayerHit,
   sideHitDefeats,
+  tickEnemyAttack,
+  type EnemyAttackState,
 } from '../config/enemyRamming';
 import { SCORE, computeRunScore } from '../config/scoring';
 import { horizonFadeAlpha, horizonSpawnZ, LANE_OCCUPANCY } from '../config/laneOccupancy';
@@ -107,8 +110,10 @@ interface LaneEntity {
   ramIFrames?: number;
   /** Reste au plan joueur jusqu’à élimination */
   holdAtPlayer?: boolean;
-  /** Cooldown tir moto (s) — une fois au hold */
-  shootCooldown?: number;
+  /** Machine d’attaque (cooldown / windup) — motos & futurs mobs */
+  attackState?: EnemyAttackState;
+  /** Compteur d’impacts offensifs valides (serial anti double-reset) */
+  attackHitSerial?: number;
 }
 
 interface ActiveEffect {
@@ -1442,7 +1447,8 @@ export class GameScene extends Phaser.Scene {
         sideHits: 0,
         ramIFrames: 0,
         holdAtPlayer: true,
-        shootCooldown: MOTO_SHOOT_FIRST_DELAY,
+        attackState: createEnemyAttackState(MOTO_ATTACK_PROFILE),
+        attackHitSerial: 0,
       };
       this.layoutEntity(ent);
       const p = this.world.proj.project(lane, Math.min(z, 160));
@@ -1472,11 +1478,11 @@ export class GameScene extends Phaser.Scene {
       x: fromLeft ? left + 36 : right - 36,
       duration: 500 / scaleNow(),
       onComplete: () => {
-        // 3 tirs : chacun choisit une voie (identique ou différente) et y reste
+        // 3 tirs : chacun choisit une voie et y vole depuis la calomnie
         for (let i = 0; i < 3; i++) {
           this.time.delayedCall((i * 380) / scaleNow(), () => {
-            if (!this.playing || this.paused) return;
-            this.fireCalomnieShot();
+            if (!this.playing || this.paused || !attacker.active) return;
+            this.fireCalomnieShot(attacker.x, attacker.y);
           });
         }
         this.time.delayedCall(1600 / scaleNow(), () => {
@@ -1491,26 +1497,58 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** Projectile calomnie : une voie aléatoire, approche comme un obstacle (pas de traverse). */
-  private fireCalomnieShot(): void {
+  /**
+   * Projectile calomnie : part du sorcier, vole jusqu’à une voie choisie.
+   * Dangereux seulement près de cette voie (pas de traverse des 3 voies).
+   */
+  private fireCalomnieShot(fromX: number, fromY: number): void {
     const targetLane = this.rng.int(0, 2);
-    const z = Math.min(this.world.proj.maxZ * 0.72, Math.max(140, this.spawnZ() * 0.62));
-    const sprite = this.add.image(0, 0, textureKey('projectile', this));
-    applyWorldDisplayForKey(sprite, 'projectile');
-    rememberBaseDisplay(sprite);
-    const ent: LaneEntity = {
-      sprite,
+    const scale = getThreatTimeScale(this.hasEffect('slowmo'));
+    const toX = this.world.proj.laneScreenX(targetLane);
+    const toY = this.player.y - 12;
+    const laneHalf = this.world.proj.laneSpacingAt(0) * 0.48;
+
+    const proj = this.add
+      .image(fromX, fromY, textureKey('projectile', this))
+      .setDepth(DEPTH.fx);
+    applyWorldDisplayForKey(proj, 'projectile');
+    proj.setData('armed', false);
+
+    this.entities.push({
+      sprite: proj,
       lane: targetLane,
-      worldZ: z,
+      worldZ: 0,
       kind: 'projectile',
       hit: false,
+      screenSpace: true,
       logicalKey: 'projectile',
-      // world-space → collise uniquement sur sa voie
-    };
-    this.layoutEntity(ent);
-    this.entities.push(ent);
-    const p = this.world.proj.project(targetLane, z);
-    this.showDirectionalWarn(p.x, Math.min(p.y, this.H * 0.42), '!', '#ea80fc');
+    });
+
+    this.showDirectionalWarn(toX, Math.min(toY - 80, this.H * 0.4), '!', '#ea80fc');
+
+    // Vol vers la voie (~1,1 s) → temps d’esquiver
+    this.tweens.add({
+      targets: proj,
+      x: toX,
+      y: toY,
+      duration: 1100 / scale,
+      ease: 'Sine.easeIn',
+      onUpdate: () => {
+        if (!proj.active) return;
+        proj.setData('armed', Math.abs(proj.x - toX) <= laneHalf);
+      },
+      onComplete: () => {
+        if (!proj.active) return;
+        proj.setData('armed', true);
+        // Continue vers le bas et sort de l’écran
+        this.tweens.add({
+          targets: proj,
+          y: this.BH + 70,
+          duration: 480 / scale,
+          ease: 'Quad.easeIn',
+        });
+      },
+    });
   }
 
   private spawnColere(): void {
@@ -1825,6 +1863,19 @@ export class GameScene extends Phaser.Scene {
     const to = this.getEntityHitRect(e, sp);
 
     if (e.screenSpace) {
+      // Projectiles de voie (calomnie / moto) : uniquement sur la voie ciblée, une fois armés
+      if (e.kind === 'projectile') {
+        if (Math.round(e.lane) !== this.lane) {
+          sp.setData('prevHitX', sp.x);
+          sp.setData('prevHitY', sp.y);
+          return false;
+        }
+        if (sp.getData('armed') === false) {
+          sp.setData('prevHitX', sp.x);
+          sp.setData('prevHitY', sp.y);
+          return false;
+        }
+      }
       const prevX = sp.getData('prevHitX') as number | undefined;
       const prevY = sp.getData('prevHitY') as number | undefined;
       let hit: boolean;
@@ -1942,6 +1993,16 @@ export class GameScene extends Phaser.Scene {
       if (ram === 'side_left' || ram === 'side_right') {
         e.sideHits = (e.sideHits ?? 0) + 1;
         e.ramIFrames = MOTO_RAM_IFRAMES;
+        // Reset vrai cooldown offensif (annule windup, repousse de 3 s)
+        e.attackHitSerial = (e.attackHitSerial ?? 0) + 1;
+        if (e.attackState) {
+          const reset = onEnemyReceivedPlayerHit(
+            e.attackState,
+            MOTO_ATTACK_PROFILE,
+            e.attackHitSerial,
+          );
+          e.attackState = reset.state;
+        }
         // Rebond : revenir sur la voie d’avant l’attaque (évite de rester sur la moto)
         this.snapToPreviousLane(Math.round(e.lane));
         if (sideHitDefeats(e.sideHits)) {
@@ -2340,11 +2401,19 @@ export class GameScene extends Phaser.Scene {
   /**
    * Tir périodique des motos ennemies au hold — même type de projectile que la calomnie.
    */
+  /**
+   * Tir périodique des motos ennemies au hold.
+   * Cooldown 3 s ; reset complet sur impact latéral joueur (voir onEnemyReceivedPlayerHit).
+   */
   private tickMotoShoot(e: LaneEntity, sp: Phaser.GameObjects.Image, dt: number): void {
     if (!this.playing || this.paused || e.hit) return;
-    e.shootCooldown = (e.shootCooldown ?? MOTO_SHOOT_INTERVAL) - dt;
-    if (e.shootCooldown > 0) return;
-    e.shootCooldown = MOTO_SHOOT_INTERVAL;
+    if (!e.attackState) {
+      e.attackState = createEnemyAttackState(MOTO_ATTACK_PROFILE);
+    }
+    const stepped = tickEnemyAttack(e.attackState, MOTO_ATTACK_PROFILE, dt);
+    e.attackState = stepped.state;
+    if (!stepped.shouldFire) return;
+    // Tir : le projectile déjà créé n’est plus lié au cooldown
     this.fireMotoProjectile(e, sp);
   }
 
@@ -2355,18 +2424,16 @@ export class GameScene extends Phaser.Scene {
     const fromY = sp.y - 18;
     const toX = this.world.proj.laneScreenX(targetLane);
     const toY = this.player.y - 8;
+    const laneHalf = this.world.proj.laneSpacingAt(0) * 0.48;
     const proj = this.add.image(fromX, fromY, textureKey('projectile', this)).setDepth(DEPTH.fx);
     applyWorldDisplayForKey(proj, 'projectile');
-    const dx = toX - fromX;
-    const duration = 900 / scaleNow();
-    const vx = dx / Math.max(0.35, duration / 1000);
+    proj.setData('armed', false);
     this.entities.push({
       sprite: proj,
       lane: targetLane,
       worldZ: 0,
       kind: 'projectile',
       hit: false,
-      vx,
       screenSpace: true,
       logicalKey: 'projectile',
     });
@@ -2374,7 +2441,20 @@ export class GameScene extends Phaser.Scene {
       targets: proj,
       x: toX,
       y: toY,
-      duration,
+      duration: 900 / scaleNow(),
+      onUpdate: () => {
+        if (!proj.active) return;
+        proj.setData('armed', Math.abs(proj.x - toX) <= laneHalf);
+      },
+      onComplete: () => {
+        if (!proj.active) return;
+        proj.setData('armed', true);
+        this.tweens.add({
+          targets: proj,
+          y: this.BH + 70,
+          duration: 400 / scaleNow(),
+        });
+      },
     });
   }
 

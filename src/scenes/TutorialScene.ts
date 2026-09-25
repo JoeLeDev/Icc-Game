@@ -37,7 +37,7 @@ export class TutorialScene extends Phaser.Scene {
       },
       {
         title: 'Dangers',
-        body: 'Voitures, tonneaux, colère, rejet (voie fermée). Les motos ennemies (dépression / peur) restent à ta hauteur, te tirent dessus toutes les 2 s, et se vainquent avec 2 coups de flanc.',
+        body: 'Voitures, tonneaux, colère, rejet (voie fermée). Les motos ennemies (dépression / peur) restent à ta hauteur, te tirent toutes les 3 s (chaque coup de flanc repousse leur tir), et se vainquent avec 2 coups de flanc.',
       },
       {
         title: 'Doutes (?)',
