@@ -6,16 +6,23 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "lint": "eslint .",
+    "check": "npm run lint && npm test && npm run build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "test:watch": "vitest"
   },
   "dependencies": {
     "phaser": "^3.87.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
+    "eslint": "^10.11.0",
     "typescript": "~5.7.2",
+    "typescript-eslint": "^8.70.1",
     "vite": "^6.0.5",
-    "vitest": "^3.0.5"
+    "vitest": "^5.0.2"
   }
 }

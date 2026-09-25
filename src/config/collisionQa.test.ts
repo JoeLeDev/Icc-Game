@@ -5,7 +5,6 @@ import {
   aabbSweptOverlap,
   estimateNearScreenDeltaY,
   hitRectForRole,
-  makeHitRect,
 } from '../systems/Hitbox';
 import { computeLayout } from './responsiveLayout';
 

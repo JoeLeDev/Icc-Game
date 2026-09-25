@@ -4,7 +4,6 @@ import {
   aabbOverlap,
   estimateVisualContactZ,
   hitRectForRole,
-  makeHitRect,
 } from '../systems/Hitbox';
 import { LAYOUT_RULES, TEST_VIEWPORTS, computeLayout } from './responsiveLayout';
 

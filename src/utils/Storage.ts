@@ -16,37 +16,70 @@ export interface LocalScore {
   grade?: FinalGrade;
 }
 
+const memory = new Map<string, string>();
+
+function get(key: string): string | null {
+  try {
+    return localStorage.getItem(key) ?? memory.get(key) ?? null;
+  } catch {
+    return memory.get(key) ?? null;
+  }
+}
+
+function set(key: string, value: string): void {
+  memory.set(key, value);
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Le jeu reste utilisable lorsque le stockage est désactivé ou plein.
+  }
+}
+
+function isLocalScore(value: unknown): value is LocalScore {
+  if (!value || typeof value !== 'object') return false;
+  const score = value as Partial<LocalScore>;
+  return (
+    Number.isFinite(score.distance) &&
+    Number.isFinite(score.equipment) &&
+    typeof score.love === 'boolean' &&
+    typeof score.date === 'string' &&
+    (score.score === undefined || Number.isFinite(score.score))
+  );
+}
+
 export const Storage = {
   getSoundEnabled(): boolean {
-    const v = localStorage.getItem(CONFIG.storage.soundKey);
+    const v = get(CONFIG.storage.soundKey);
     return v === null ? true : v === '1';
   },
 
   setSoundEnabled(on: boolean): void {
-    localStorage.setItem(CONFIG.storage.soundKey, on ? '1' : '0');
+    set(CONFIG.storage.soundKey, on ? '1' : '0');
   },
 
   getDifficulty(): DifficultyId {
-    const v = localStorage.getItem(CONFIG.storage.difficultyKey);
+    const v = get(CONFIG.storage.difficultyKey);
     return isDifficultyId(v) ? v : DEFAULT_DIFFICULTY;
   },
 
   setDifficulty(id: DifficultyId): void {
-    localStorage.setItem(CONFIG.storage.difficultyKey, getDifficultyPreset(id).id);
+    set(CONFIG.storage.difficultyKey, getDifficultyPreset(id).id);
   },
 
   getBestDistance(): number {
-    return Number(localStorage.getItem(CONFIG.storage.bestScoreKey) || 0);
+    const value = Number(get(CONFIG.storage.bestScoreKey) || 0);
+    return Number.isFinite(value) ? value : 0;
   },
 
   setBestDistance(m: number): void {
     const best = this.getBestDistance();
-    if (m > best) localStorage.setItem(CONFIG.storage.bestScoreKey, String(Math.floor(m)));
+    if (m > best) set(CONFIG.storage.bestScoreKey, String(Math.floor(m)));
   },
 
   getLeaderboard(): LocalScore[] {
     try {
-      return JSON.parse(localStorage.getItem(CONFIG.storage.leaderboardKey) || '[]');
+      const parsed: unknown = JSON.parse(get(CONFIG.storage.leaderboardKey) || '[]');
+      return Array.isArray(parsed) ? parsed.filter(isLocalScore) : [];
     } catch {
       return [];
     }
@@ -61,7 +94,7 @@ export const Storage = {
         b.distance - a.distance ||
         b.equipment - a.equipment,
     );
-    localStorage.setItem(CONFIG.storage.leaderboardKey, JSON.stringify(board.slice(0, 10)));
+    set(CONFIG.storage.leaderboardKey, JSON.stringify(board.slice(0, 10)));
     this.setBestDistance(entry.distance);
   },
 };

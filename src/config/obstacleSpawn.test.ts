@@ -143,7 +143,6 @@ describe('obstacleSpawn — distribution contrôlée', () => {
     for (const playerLane of [0, 1, 2] as const) {
       const sim = simulateObstacleSpawns({ count: 1000, seed: 2026, playerLane, tier: 4 });
       const t = sim.distribution.total;
-      // eslint-disable-next-line no-console
       console.log(
         `[sim playerLane=${playerLane}] L=${sim.distribution.left}(${((100 * sim.distribution.left) / t).toFixed(1)}%) ` +
           `C=${sim.distribution.center}(${((100 * sim.distribution.center) / t).toFixed(1)}%) ` +

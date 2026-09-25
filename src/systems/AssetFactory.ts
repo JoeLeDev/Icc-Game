@@ -136,41 +136,45 @@ export async function tryLoadExternalAssets(scene: Phaser.Scene): Promise<string
     { key: 'skyline', path: 'assets/skyline.png' },
     // Background global desktop (plein écran) — Building.png en attendant un panorama dédié
     { key: 'dressing-city', path: 'assets/Building.png' },
-    // Hook futur : panorama DA Khayil exact
-    { key: 'bg-panorama', path: 'assets/bg_panorama.png' },
     { key: 'building_01', path: 'assets/building_01.png' },
     { key: 'building_02', path: 'assets/building_02.png' },
     { key: 'building_03', path: 'assets/building_03.png' },
   ];
   EQUIPMENTS.forEach((eq) => {
-    candidates.push({ key: `eq-${eq.id}`, path: `assets/eq_${eq.id}.png` });
-    // Même source PNG — la taille HUD est forcée à l’affichage, pas à la texture
-    candidates.push({ key: `eq-icon-${eq.id}`, path: `assets/eq_${eq.id}.png` });
+    const path = `assets/eq_${eq.id}.png`;
+    candidates.push({ key: `eq-${eq.id}`, path });
+    // Même source PNG — la taille HUD est forcée à l’affichage, pas à la texture.
+    candidates.push({ key: `eq-icon-${eq.id}`, path });
   });
 
-  const loaded: string[] = [];
-  for (const c of candidates) {
-    try {
-      const ok = await loadImageIfExists(scene, c.key + '_ext', c.path);
-      if (ok && scene.textures.exists(c.key + '_ext')) {
-        promoteExternalTexture(scene, c.key);
-        loaded.push(c.path);
-      }
-    } catch {
-      /* ignore */
+  // Les gros PNG ne doivent pas former une chaîne de requêtes réseau. Une seule
+  // promesse est aussi partagée par les textures monde + HUD d'un équipement.
+  const sources = new Map<string, Promise<HTMLImageElement | null>>();
+  const sourceFor = (path: string): Promise<HTMLImageElement | null> => {
+    let source = sources.get(path);
+    if (!source) {
+      source = loadImage(path);
+      sources.set(path, source);
     }
-  }
+    return source;
+  };
 
-  return loaded;
+  const results = await Promise.all(
+    candidates.map(async ({ key, path }) => {
+      const source = await sourceFor(path);
+      if (!source) return null;
+      promoteExternalTexture(scene, key, source);
+      return path;
+    }),
+  );
+
+  return [...new Set(results.filter((path): path is string => path !== null))];
 }
 
 /** Remplace la texture procédurale `key` par l’image `key_ext` (même nom de clé). */
-function promoteExternalTexture(scene: Phaser.Scene, key: string): void {
-  const extKey = key + '_ext';
-  if (!scene.textures.exists(extKey)) return;
-  const src = scene.textures.get(extKey).getSourceImage() as HTMLImageElement | HTMLCanvasElement;
+function promoteExternalTexture(scene: Phaser.Scene, key: string, src: HTMLImageElement): void {
   if (scene.textures.exists(key)) scene.textures.remove(key);
-  scene.textures.addImage(key, src as HTMLImageElement);
+  scene.textures.addImage(key, src);
 }
 
 /**
@@ -192,18 +196,11 @@ export function fitTextureScale(scene: Phaser.Scene, key: string, fallbackTarget
   return h <= 130 ? 1 : 64 / h;
 }
 
-function loadImageIfExists(scene: Phaser.Scene, key: string, path: string): Promise<boolean> {
+function loadImage(path: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
-    if (scene.textures.exists(key)) {
-      resolve(true);
-      return;
-    }
     const img = new Image();
-    img.onload = () => {
-      scene.textures.addImage(key, img);
-      resolve(true);
-    };
-    img.onerror = () => resolve(false);
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
     img.src = path;
   });
 }

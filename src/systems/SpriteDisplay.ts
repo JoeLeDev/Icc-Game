@@ -1,4 +1,4 @@
-import Phaser from 'phaser';
+import type Phaser from 'phaser';
 import { DISPLAY } from '../config/displaySizes';
 import {
   LANE_OCCUPANCY,

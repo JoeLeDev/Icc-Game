@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { EquipmentId } from '../config/gameConfig';
+import type { EquipmentId } from '../config/gameConfig';
 import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
 import { applyDisplayWidth } from '../systems/SpriteDisplay';
 import { audio } from '../utils/AudioManager';

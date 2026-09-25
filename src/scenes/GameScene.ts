@@ -6,11 +6,9 @@ import {
   type LayoutMetrics,
 } from '../config/responsiveLayout';
 import {
-  AttackFamily,
   BONUSES,
   CONFIG,
   EQUIPMENTS,
-  EquipmentId,
   LANES,
   getScrollSpeed,
   getThreatTimeScale,
@@ -19,6 +17,7 @@ import {
   nextLaneIndex,
   readDevQuery,
 } from '../config/gameConfig';
+import type { AttackFamily, EquipmentId } from '../config/gameConfig';
 import { type DifficultyPreset, getDifficultyPreset } from '../config/difficulty';
 import {
   MAX_MOTO_FOES,
@@ -46,11 +45,11 @@ import {
 } from '../systems/Hitbox';
 import { DEPTH, entityDrawDepth } from '../systems/RoadProjection';
 import {
-  RoadOccupant,
   pickEquipmentId,
   pickMotoSpawnLanes,
   pickSafeCollectLane,
 } from '../systems/SpawnFairness';
+import type { RoadOccupant } from '../systems/SpawnFairness';
 import {
   ObstacleLaneDistributor,
   chooseObstacleLanesControlled,
@@ -63,8 +62,13 @@ import {
   rememberBaseDisplay,
 } from '../systems/SpriteDisplay';
 import { WorldView } from '../systems/WorldView';
+import { GameFeedback } from '../systems/GameFeedback';
+import { PlayerController } from '../systems/PlayerController';
+import { SpawnDirector } from '../systems/SpawnDirector';
+import { HudPresenter } from '../systems/HudPresenter';
 import { audio } from '../utils/AudioManager';
-import { Rng, createRng } from '../utils/Rng';
+import { createRng } from '../utils/Rng';
+import type { Rng } from '../utils/Rng';
 import { Storage } from '../utils/Storage';
 
 type EntityKind =
@@ -164,14 +168,7 @@ export class GameScene extends Phaser.Scene {
   /** Temps de simulation (s) — n'avance pas en pause */
   private simTime = 0;
 
-  private spawnTimers = {
-    obstacle: 3.5,
-    equipment: CONFIG.spawn.firstEquipmentDelay,
-    bonus: 16,
-    attack: 22,
-  };
-  /** Respiration après attaque (s) — freine obstacle + attaque */
-  private breathRemaining = 0;
+  private spawnDirector!: SpawnDirector;
   private rng!: Rng;
   private debugMode = false;
   private debugText: Phaser.GameObjects.Text | null = null;
@@ -192,10 +189,9 @@ export class GameScene extends Phaser.Scene {
   private hudEqText!: Phaser.GameObjects.Text;
   private hudDist!: Phaser.GameObjects.Text;
   private hudEffects!: Phaser.GameObjects.Text;
-  private toast!: Phaser.GameObjects.Text;
-  private flash!: Phaser.GameObjects.Rectangle;
+  private hud!: HudPresenter;
   private countdownText!: Phaser.GameObjects.Text;
-  private speedBanner!: Phaser.GameObjects.Text;
+  private feedback!: GameFeedback;
   private pauseBtn!: Phaser.GameObjects.Container;
   private pauseBtnHit!: Phaser.GameObjects.Zone;
   private controlsHint!: Phaser.GameObjects.Text;
@@ -203,18 +199,9 @@ export class GameScene extends Phaser.Scene {
   private pauseMenuHits: Phaser.GameObjects.Rectangle[] = [];
   private hudHits: Phaser.GameObjects.Rectangle[] = [];
 
-  private swipeStartX = 0;
+  private inputController!: PlayerController;
   private laneTween: Phaser.Tweens.Tween | null = null;
-  private lastLaneKeyAt = 0;
-  private keys: {
-    left: Phaser.Input.Keyboard.Key;
-    right: Phaser.Input.Keyboard.Key;
-    a: Phaser.Input.Keyboard.Key;
-    d: Phaser.Input.Keyboard.Key;
-    esc: Phaser.Input.Keyboard.Key;
-  } | null = null;
 
-  private particles!: Phaser.GameObjects.Particles.ParticleEmitter;
   private lastSpeedTier = -1;
   private hudTopBar!: Phaser.GameObjects.Rectangle;
   private eqPanel!: Phaser.GameObjects.Rectangle;
@@ -222,50 +209,6 @@ export class GameScene extends Phaser.Scene {
   private pauseBg!: Phaser.GameObjects.Rectangle;
   private hitDebugGfx: Phaser.GameObjects.Graphics | null = null;
   private playerHitbox = { w: 42, h: 70 };
-
-  private readonly onFocusCanvas = (): void => {
-    this.game.canvas.focus();
-  };
-  /** Secours fenêtre : Phaser rate parfois les flèches selon le focus / capture */
-  private readonly onWindowKeyDown = (e: KeyboardEvent): void => {
-    if (!this.sys?.isActive()) return;
-    if (e.repeat) return;
-    switch (e.code) {
-      case 'ArrowLeft':
-      case 'KeyA':
-        e.preventDefault();
-        this.changeLaneFromKey(-1);
-        break;
-      case 'ArrowRight':
-      case 'KeyD':
-        e.preventDefault();
-        this.changeLaneFromKey(1);
-        break;
-      case 'Escape':
-        e.preventDefault();
-        this.togglePause();
-        break;
-      default:
-        break;
-    }
-  };
-  private readonly onPointerDown = (p: Phaser.Input.Pointer): void => {
-    const hits = this.input.hitTestPointer(p);
-    const onHud = hits.some(
-      (obj) => (obj as Phaser.GameObjects.GameObject & { isHudControl?: boolean }).isHudControl,
-    );
-    this.swipeStartX = onHud ? Number.NaN : p.x;
-  };
-  private readonly onPointerUp = (p: Phaser.Input.Pointer): void => {
-    if (!this.canControl() || Number.isNaN(this.swipeStartX)) return;
-    const dx = p.x - this.swipeStartX;
-    if (Math.abs(dx) > 40) this.changeLane(dx > 0 ? 1 : -1);
-  };
-  private readonly onVisibility = (): void => {
-    if (document.hidden && !this.paused && (this.playing || this.countdownActive) && !this.gameOver && !this.won) {
-      this.setPaused(true);
-    }
-  };
 
   constructor() {
     super('Game');
@@ -287,7 +230,7 @@ export class GameScene extends Phaser.Scene {
     this.createHud();
     this.createPauseOverlay();
     this.setupInput();
-    this.createParticles();
+    this.createFeedback();
     if (this.debugMode) this.createDebugOverlay();
     this.startCountdown();
     this.scale.on('resize', this.onGameResize, this);
@@ -358,9 +301,7 @@ export class GameScene extends Phaser.Scene {
     this.placeButton(this.pauseBtn, this.pauseBtnHit, this.layout.pauseBtnX, this.layout.pauseBtnY, this.layout.pauseBtnSize);
 
     this.distractionOverlay.setPosition(this.BW / 2, this.BH / 2).setSize(this.BW, this.BH);
-    this.flash.setPosition(this.BW / 2, this.BH / 2).setSize(this.BW, this.BH);
-    this.toast.setPosition(this.layout.centerX, this.layout.playerY - 120);
-    this.speedBanner.setPosition(this.layout.centerX, this.H * 0.32);
+    this.feedback.applyLayout(this.layout);
     this.countdownText.setPosition(this.layout.centerX, this.H * 0.42);
     if (this.controlsHint?.active) {
       this.controlsHint.setPosition(this.layout.centerX, this.H * 0.55);
@@ -452,15 +393,16 @@ export class GameScene extends Phaser.Scene {
     this.closeRemaining = 0;
     this.closeWarningRemaining = 0;
     this.distractionRemaining = 0;
-    this.spawnTimers = {
-      obstacle: 3.5 * this.difficulty.obstacleIntervalMul,
-      equipment: CONFIG.spawn.firstEquipmentDelay,
-      bonus: 16,
-      attack: 22 * this.difficulty.attackIntervalMul,
-    };
-    this.breathRemaining = 0;
+    this.spawnDirector = new SpawnDirector({
+      isFinalSpawnBlocked: () => this.finalPhase && this.finalTimer < 2.5,
+      equipmentCount: () => this.collected.size,
+      spawnObstaclePattern: (tier) => this.spawnObstaclePattern(tier),
+      spawnEquipment: () => this.spawnEquipment(),
+      spawnBonusOrLove: () => this.spawnBonusOrLove(),
+      spawnAttack: (tier) => this.spawnAttack(tier),
+    }, this.rng);
+    this.spawnDirector.reset(this.difficulty);
     this.lastSpeedTier = -1;
-    this.swipeStartX = 0;
     this.time.paused = false;
   }
 
@@ -523,15 +465,8 @@ export class GameScene extends Phaser.Scene {
     this.trail.setDepth(DEPTH.player - 1);
   }
 
-  private createParticles(): void {
-    this.particles = this.add.particles(0, 0, 'particle-gold', {
-      speed: { min: 40, max: 160 },
-      scale: { start: 1.1, end: 0 },
-      lifespan: 480,
-      emitting: false,
-      tint: [0xffd54f, 0xff2d95, 0x00e5ff, 0xffffff],
-    });
-    this.particles.setDepth(DEPTH.fx);
+  private createFeedback(): void {
+    this.feedback = new GameFeedback(this, () => this.layout);
   }
 
   private createHud(): void {
@@ -612,34 +547,11 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(DEPTH.hud);
 
-    this.toast = this.add
-      .text(this.layout.centerX, this.layout.playerY - 120, '', {
-        fontFamily: 'Orbitron, sans-serif',
-        fontSize: '16px',
-        color: '#ffd54f',
-        stroke: '#000',
-        strokeThickness: 4,
-        align: 'center',
-      })
-      .setOrigin(0.5)
-      .setAlpha(0)
-      .setDepth(DEPTH.hud + 10);
-
-    this.speedBanner = this.add
-      .text(this.layout.centerX, this.H * 0.32, '', {
-        fontFamily: 'Orbitron, sans-serif',
-        fontSize: '15px',
-        color: '#ff2d95',
-        stroke: '#000',
-        strokeThickness: 3,
-      })
-      .setOrigin(0.5)
-      .setAlpha(0)
-      .setDepth(DEPTH.hud + 10);
-
-    this.flash = this.add
-      .rectangle(this.BW / 2, this.BH / 2, this.BW, this.BH, 0xffffff, 0)
-      .setDepth(DEPTH.fx + 5);
+    this.hud = new HudPresenter({
+      hearts: this.hudHearts,
+      distance: this.hudDist,
+      effects: this.hudEffects,
+    });
 
     this.countdownText = this.add
       .text(this.layout.centerX, this.H * 0.42, '', {
@@ -719,7 +631,7 @@ export class GameScene extends Phaser.Scene {
     };
 
     hit.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      this.swipeStartX = Number.NaN;
+      this.inputController.cancelSwipe();
       pointer.event?.preventDefault?.();
       press();
     });
@@ -778,87 +690,25 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
-    const canvas = this.game.canvas;
-    canvas.setAttribute('tabindex', '0');
-    canvas.style.outline = 'none';
-    canvas.focus();
-    this.input.on('pointerdown', this.onFocusCanvas);
-
-    const kb = this.input.keyboard;
-    if (kb) {
-      kb.enabled = true;
-      kb.addCapture([
-        Phaser.Input.Keyboard.KeyCodes.LEFT,
-        Phaser.Input.Keyboard.KeyCodes.RIGHT,
-        Phaser.Input.Keyboard.KeyCodes.A,
-        Phaser.Input.Keyboard.KeyCodes.D,
-        Phaser.Input.Keyboard.KeyCodes.ESC,
-      ]);
-
-      this.keys = {
-        left: kb.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT, false),
-        right: kb.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT, false),
-        a: kb.addKey(Phaser.Input.Keyboard.KeyCodes.A, false),
-        d: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D, false),
-        esc: kb.addKey(Phaser.Input.Keyboard.KeyCodes.ESC, false),
-      };
-    }
-
-    window.addEventListener('keydown', this.onWindowKeyDown, { passive: false });
-    this.input.on('pointerdown', this.onPointerDown);
-    this.input.on('pointerup', this.onPointerUp);
-    document.addEventListener('visibilitychange', this.onVisibility);
+    this.inputController = new PlayerController(this, {
+      canControl: () => this.canControl(),
+      canPauseOnHidden: () => !this.paused && (this.playing || this.countdownActive) && !this.gameOver && !this.won,
+      isHudControl: (pointer) => this.input.hitTestPointer(pointer).some(
+        (obj) => (obj as Phaser.GameObjects.GameObject & { isHudControl?: boolean }).isHudControl,
+      ),
+      moveLane: (direction) => this.changeLane(direction),
+      togglePause: () => this.togglePause(),
+      pause: () => this.setPaused(true),
+    });
+    this.inputController.attach();
   }
 
   private cleanupInput(): void {
-    const kb = this.input.keyboard;
-    if (kb && this.keys) {
-      kb.removeCapture([
-        Phaser.Input.Keyboard.KeyCodes.LEFT,
-        Phaser.Input.Keyboard.KeyCodes.RIGHT,
-        Phaser.Input.Keyboard.KeyCodes.A,
-        Phaser.Input.Keyboard.KeyCodes.D,
-        Phaser.Input.Keyboard.KeyCodes.ESC,
-      ]);
-      kb.removeKey(this.keys.left);
-      kb.removeKey(this.keys.right);
-      kb.removeKey(this.keys.a);
-      kb.removeKey(this.keys.d);
-      kb.removeKey(this.keys.esc);
-      this.keys = null;
-    }
-    window.removeEventListener('keydown', this.onWindowKeyDown);
-    this.input.off('pointerdown', this.onFocusCanvas);
-    this.input.off('pointerdown', this.onPointerDown);
-    this.input.off('pointerup', this.onPointerUp);
-    document.removeEventListener('visibilitychange', this.onVisibility);
-  }
-
-  private pollKeyboard(): void {
-    if (!this.keys) return;
-    const { left, right, a, d, esc } = this.keys;
-    if (Phaser.Input.Keyboard.JustDown(esc)) {
-      this.togglePause();
-      return;
-    }
-    if (!this.canControl()) return;
-    if (Phaser.Input.Keyboard.JustDown(left) || Phaser.Input.Keyboard.JustDown(a)) {
-      this.changeLaneFromKey(-1);
-    } else if (Phaser.Input.Keyboard.JustDown(right) || Phaser.Input.Keyboard.JustDown(d)) {
-      this.changeLaneFromKey(1);
-    }
+    this.inputController?.detach();
   }
 
   private canControl(): boolean {
     return this.playing && !this.paused && !this.gameOver && !this.won;
-  }
-
-  /** Évite un double changement de voie (JustDown + listener window la même frame) */
-  private changeLaneFromKey(dir: number): void {
-    const now = performance.now();
-    if (now - this.lastLaneKeyAt < 80) return;
-    this.lastLaneKeyAt = now;
-    this.changeLane(dir);
   }
 
   private changeLane(dir: number): void {
@@ -927,7 +777,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_t: number, delta: number): void {
-    this.pollKeyboard();
+    this.inputController.update();
 
     if (this.gameOver || this.won) return;
     if (this.paused) return;
@@ -950,7 +800,7 @@ export class GameScene extends Phaser.Scene {
 
     const tier = getTier(eqCount);
     if (tier !== this.lastSpeedTier && tier >= 3 && !this.finalPhase) {
-      this.showSpeedBanner(tier);
+      this.feedback.speedBanner(this.collected.size);
     }
     this.lastSpeedTier = tier;
 
@@ -959,10 +809,8 @@ export class GameScene extends Phaser.Scene {
     this.refreshHudScore();
     this.player.y = this.world.proj.playerY;
 
-    if (this.breathRemaining > 0) this.breathRemaining = Math.max(0, this.breathRemaining - dt);
-
     this.tickEffects(dt);
-    this.tickSpawns(dt);
+    this.spawnDirector.tick(dt, this.difficulty);
     this.tickEntities(dt);
     this.tickLaneClosure(dt);
     this.tickDistraction();
@@ -972,10 +820,6 @@ export class GameScene extends Phaser.Scene {
     this.tickFinalPhase(dt);
     this.updateHudEffects();
     this.updateDebugOverlay();
-  }
-
-  private scrollRoad(_amount: number): void {
-    /* remplacé par WorldView.update */
   }
 
   private layoutEntity(e: LaneEntity): void {
@@ -1050,59 +894,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateHudEffects(): void {
-    const parts: string[] = [];
-    for (const e of this.effects) {
-      const labels: Record<string, string> = {
-        magnet: 'Aimant',
-        slowmo: 'Ralenti',
-        boost: 'Boost',
-        love: 'Amour',
-      };
-      if (labels[e.id]) parts.push(`${labels[e.id]} ${Math.ceil(e.remaining)}s`);
-    }
-    if (this.hasTempShield) parts.push('Bouclier');
-    if (this.invincibleRemaining > 0.15 && !this.hasEffect('love')) {
-      parts.push(`Invuln. ${this.invincibleRemaining.toFixed(1)}s`);
-    }
-    this.hudEffects.setText(parts.join(' · '));
-  }
-
-  private tickSpawns(dt: number): void {
-    if (this.finalPhase && this.finalTimer < 2.5) return;
-
-    const tier = getTier(this.collected.size);
-    const breathSlow = this.breathRemaining > 0 ? 0.45 : 1;
-
-    this.spawnTimers.obstacle -= dt * breathSlow;
-    this.spawnTimers.equipment -= dt;
-    this.spawnTimers.bonus -= dt;
-    this.spawnTimers.attack -= dt * breathSlow;
-
-    if (this.spawnTimers.obstacle <= 0) {
-      this.spawnObstaclePattern(tier);
-      this.spawnTimers.obstacle =
-        CONFIG.spawn.obstacleInterval[tier]! *
-        this.difficulty.obstacleIntervalMul *
-        this.rng.float(0.9, 1.12);
-    }
-    if (this.spawnTimers.equipment <= 0 && this.collected.size < 7) {
-      this.spawnEquipment();
-      this.spawnTimers.equipment =
-        CONFIG.spawn.equipmentInterval[tier]! * this.rng.float(0.92, 1.12);
-    }
-    if (this.spawnTimers.bonus <= 0) {
-      this.spawnBonusOrLove();
-      this.spawnTimers.bonus = CONFIG.spawn.bonusInterval[tier]! * this.rng.float(0.9, 1.2);
-    }
-    if (this.spawnTimers.attack <= 0 && CONFIG.spawn.attackInterval[tier]! < 90) {
-      if (this.spawnAttack(tier)) {
-        this.breathRemaining = Math.max(this.breathRemaining, CONFIG.spawn.breathAfterAttack);
-      }
-      this.spawnTimers.attack =
-        CONFIG.spawn.attackInterval[tier]! *
-        this.difficulty.attackIntervalMul *
-        this.rng.float(0.9, 1.15);
-    }
+    this.hud.setEffects(this.effects, this.hasTempShield, this.invincibleRemaining, this.hasEffect('love'));
   }
 
   private currentOccupants(): RoadOccupant[] {
@@ -1174,18 +966,14 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (spawned >= 2) {
-      this.breathRemaining = Math.max(this.breathRemaining, CONFIG.spawn.breathAfterAttack);
-      this.spawnTimers.attack = Math.max(
-        this.spawnTimers.attack,
-        CONFIG.spawn.attackDelayAfterDouble,
-      );
+      this.spawnDirector.applyBreath(true);
     }
   }
 
   private spawnObstacle(lane: number, z: number, kind = 'car'): void {
     let key = 'car';
     let entKind: EntityKind = 'obstacle';
-    let baseScale = 1;
+    const baseScale = 1;
     if (kind === 'truck') key = 'truck';
     else if (kind === 'barrier') key = 'barrier';
     else if (kind === 'cone') key = 'cone';
@@ -1671,7 +1459,7 @@ export class GameScene extends Phaser.Scene {
 
   private triggerDistraction(): void {
     this.distractionRemaining = CONFIG.distraction.duration;
-    this.showToast('DISTRACTION', '#00e5ff');
+    this.feedback.toast('DISTRACTION', '#00e5ff');
     this.distractionOverlay.setFillStyle(0x00e5ff, 0.08);
   }
 
@@ -1977,9 +1765,9 @@ export class GameScene extends Phaser.Scene {
       this.doubtsCleared += 1;
       this.runScore += SCORE.perDoubt;
       this.refreshHudScore();
-      this.showToast(`Doute dissipé +${SCORE.perDoubt}`, '#90a4ae');
+      this.feedback.toast(`Doute dissipé +${SCORE.perDoubt}`, '#90a4ae');
       audio.ui();
-      this.burst(sp.x, sp.y, 0x90a4ae);
+      this.feedback.burst(sp.x, sp.y);
       this.destroyEntity(index);
       return;
     }
@@ -2010,12 +1798,12 @@ export class GameScene extends Phaser.Scene {
           this.defeatEnemy(e, index, ram);
           return;
         }
-        this.showToast(
+        this.feedback.toast(
           `Impact ${e.sideHits}/${MOTO_SIDE_HITS_TO_DEFEAT}`,
           '#ffd54f',
         );
         audio.ui();
-        this.burst(sp.x, sp.y, 0xffd54f);
+        this.feedback.burst(sp.x, sp.y);
         sp.setTint(0xffab40);
         this.time.delayedCall(180, () => {
           if (sp.active) sp.clearTint();
@@ -2038,9 +1826,9 @@ export class GameScene extends Phaser.Scene {
   private defeatEnemy(e: LaneEntity, index: number, side: 'side_left' | 'side_right'): void {
     const sp = e.sprite as Phaser.GameObjects.Image;
     this.obstaclesAvoided++;
-    this.showToast(side === 'side_left' ? 'Percuté à gauche !' : 'Percuté à droite !', '#69f0ae');
+    this.feedback.toast(side === 'side_left' ? 'Percuté à gauche !' : 'Percuté à droite !', '#69f0ae');
     audio.ui();
-    this.burst(sp.x, sp.y, 0x69f0ae);
+    this.feedback.burst(sp.x, sp.y);
     this.destroyEntity(index);
   }
 
@@ -2066,10 +1854,10 @@ export class GameScene extends Phaser.Scene {
       this.hudEqText.setText(`Équipements : ${this.collected.size}/7`);
     }
     audio.collect();
-    this.vibrate(40);
-    this.burst(x, y, eq.color);
-    this.flashScreen(eq.color, 0.14);
-    this.showToast(isNew ? eq.name : `${eq.short} (déjà équipée)`, '#ffd54f');
+    this.feedback.vibrate(40);
+    this.feedback.burst(x, y);
+    this.feedback.flashScreen(eq.color, 0.14);
+    this.feedback.toast(isNew ? eq.name : `${eq.short} (déjà équipée)`, '#ffd54f');
 
     if (isNew && this.collected.size === 7) {
       this.startFinalPhase();
@@ -2078,9 +1866,9 @@ export class GameScene extends Phaser.Scene {
 
   private collectBonus(id: string, x: number, y: number): void {
     audio.bonus();
-    this.burst(x, y, 0x00e5ff);
+    this.feedback.burst(x, y);
     const def = BONUSES.find((b) => b.id === id);
-    this.showToast(def?.name ?? id, '#00e5ff');
+    this.feedback.toast(def?.name ?? id, '#00e5ff');
 
     switch (id) {
       case 'magnet':
@@ -2105,11 +1893,11 @@ export class GameScene extends Phaser.Scene {
   private collectLove(x: number, y: number): void {
     this.loveCollected = true;
     audio.love();
-    this.vibrate(60);
+    this.feedback.vibrate(60);
     this.addEffect('love', CONFIG.effects.loveDuration);
-    this.burst(x, y, 0xff2d95);
-    this.flashScreen(0xff80ab, 0.2);
-    this.showToast("AMOUR — aucune attaque ne peut te toucher !", '#ff80ab');
+    this.feedback.burst(x, y);
+    this.feedback.flashScreen(0xff80ab, 0.2);
+    this.feedback.toast("AMOUR — aucune attaque ne peut te toucher !", '#ff80ab');
     // wave
     const wave = this.add.circle(this.player.x, this.player.y, 20, 0xff80ab, 0.3).setDepth(25);
     this.tweens.add({
@@ -2128,9 +1916,9 @@ export class GameScene extends Phaser.Scene {
 
     if (this.hasTempShield) {
       this.hasTempShield = false;
-      this.showToast('Bouclier brisé !', '#69f0ae');
+      this.feedback.toast('Bouclier brisé !', '#69f0ae');
       audio.ui();
-      this.burst(x, y, 0x69f0ae);
+      this.feedback.burst(x, y);
       this.invincibleRemaining = 0.5;
       return;
     }
@@ -2138,11 +1926,11 @@ export class GameScene extends Phaser.Scene {
     this.lives -= 1;
     this.refreshHearts();
     audio.hit();
-    this.vibrate(80);
-    this.flashScreen(0xff1744, 0.18);
+    this.feedback.vibrate(80);
+    this.feedback.flashScreen(0xff1744, 0.18);
     this.cameras.main.shake(180, 0.01);
     this.invincibleRemaining = CONFIG.player.invincibilityDuration;
-    this.showToast('Touchée !', '#ff5252');
+    this.feedback.toast('Touchée !', '#ff5252');
     // Recul sur la voie d’avant le choc — pas sur l’obstacle
     this.snapToPreviousLane(hitLane);
 
@@ -2268,21 +2056,21 @@ export class GameScene extends Phaser.Scene {
       if (e.screenSpace) {
         const sp = e.sprite as Phaser.GameObjects.Image;
         if (Math.hypot(sp.x - this.player.x, sp.y - this.player.y) < CONFIG.effects.loveDestroyRadius) {
-          this.burst(sp.x, sp.y, 0xff80ab);
+          this.feedback.burst(sp.x, sp.y);
           this.destroyEntity(i);
         }
         continue;
       }
       if (e.worldZ < 90 && Math.abs(e.lane - this.lane) <= 1) {
-        this.burst((e.sprite as Phaser.GameObjects.Image).x, (e.sprite as Phaser.GameObjects.Image).y, 0xff80ab);
+        this.feedback.burst((e.sprite as Phaser.GameObjects.Image).x, (e.sprite as Phaser.GameObjects.Image).y);
         this.destroyEntity(i);
       }
     }
   }
 
   private explodeAt(x: number, y: number, radius: number): void {
-    this.burst(x, y, 0xff3d00);
-    this.flashScreen(0xff6e40, 0.16);
+    this.feedback.burst(x, y);
+    this.feedback.flashScreen(0xff6e40, 0.16);
     const lane = this.nearestLane(x);
     const fire = this.add.image(0, 0, textureKey('colere', this));
     applyWorldDisplayForKey(fire, 'colere');
@@ -2321,8 +2109,8 @@ export class GameScene extends Phaser.Scene {
   private startFinalPhase(): void {
     this.finalPhase = true;
     this.finalTimer = CONFIG.speed.finalPhaseDuration;
-    this.showToast('CONQUÊTE FINALE !', '#ff2d95');
-    this.showSpeedBanner(7);
+    this.feedback.toast('CONQUÊTE FINALE !', '#ff2d95');
+    this.feedback.speedBanner(this.collected.size);
   }
 
   private tickFinalPhase(dt: number): void {
@@ -2395,7 +2183,7 @@ export class GameScene extends Phaser.Scene {
       won: false,
     });
     this.runScore = live.total;
-    this.hudDist.setText(`${Math.floor(this.distance)} M · ${live.total} pts`);
+    this.hud.setScore(this.distance, live.total);
   }
 
   /**
@@ -2459,58 +2247,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private refreshHearts(): void {
-    this.hudHearts.forEach((h, i) => {
-      h.setTexture(i < this.lives ? 'heart' : 'heart-empty');
+    this.hud.setHearts(this.lives);
+    this.hudHearts.forEach((h) => {
       h.setDisplaySize(this.layout.hudHeartSize, this.layout.hudHeartSize);
     });
-  }
-
-  private showToast(msg: string, color = '#ffd54f'): void {
-    const baseY = this.layout.playerY - 120;
-    this.toast.setText(msg).setColor(color).setAlpha(1).setScale(1.1);
-    this.toast.setPosition(this.layout.centerX, baseY);
-    this.tweens.killTweensOf(this.toast);
-    this.tweens.add({
-      targets: this.toast,
-      alpha: 0,
-      y: baseY - 20,
-      duration: 1400,
-      delay: 400,
-      onComplete: () => {
-        this.toast.y = baseY;
-      },
-    });
-  }
-
-  private showSpeedBanner(tier: number): void {
-    this.speedBanner.setText(`VITESSE AUGMENTÉE — ${this.collected.size}/7`).setAlpha(1);
-    this.tweens.add({
-      targets: this.speedBanner,
-      alpha: 0,
-      duration: 1600,
-      delay: 800,
-    });
-    // subtle blur feel via camera fade
-    this.cameras.main.flash(200, 255, 45, 149, false, undefined, this);
-  }
-
-  private flashScreen(color: number, alpha: number): void {
-    this.flash.setFillStyle(color, 1);
-    this.flash.setAlpha(Math.min(0.2, alpha));
-    this.tweens.killTweensOf(this.flash);
-    this.tweens.add({ targets: this.flash, alpha: 0, duration: 220 });
-  }
-
-  private burst(x: number, y: number, _tint: number): void {
-    this.particles.emitParticleAt(x, y, 18);
-  }
-
-  private vibrate(ms: number): void {
-    try {
-      navigator.vibrate?.(ms);
-    } catch {
-      /* ignore */
-    }
   }
 
   private togglePause(): void {

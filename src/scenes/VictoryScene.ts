@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
-import { EQUIPMENTS, EquipmentId } from '../config/gameConfig';
+import { EQUIPMENTS } from '../config/gameConfig';
+import type { EquipmentId } from '../config/gameConfig';
 import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
 import {
   applyDisplayBox,

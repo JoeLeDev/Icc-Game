@@ -1,4 +1,5 @@
-import { CONFIG, EQUIPMENTS, EquipmentId, LANES, getTier } from '../config/gameConfig';
+import { CONFIG, EQUIPMENTS, LANES, getTier } from '../config/gameConfig';
+import type { EquipmentId } from '../config/gameConfig';
 import type { Rng } from '../utils/Rng';
 
 /** Occupant logique sur la route (pour validation locale de spawn) */
