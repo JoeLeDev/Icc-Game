@@ -5,6 +5,7 @@ import { TutorialScene } from './scenes/TutorialScene';
 import { GameScene } from './scenes/GameScene';
 import { VictoryScene } from './scenes/VictoryScene';
 import { GameOverScene } from './scenes/GameOverScene';
+import { PrepareScene } from './scenes/PrepareScene';
 
 function viewportSize(): { width: number; height: number } {
   const parent = document.getElementById('game-container');
@@ -32,7 +33,7 @@ const config: Phaser.Types.Core.GameConfig = {
     },
   },
   autoFocus: true,
-  scene: [BootScene, MenuScene, TutorialScene, GameScene, VictoryScene, GameOverScene],
+  scene: [BootScene, MenuScene, TutorialScene, PrepareScene, GameScene, VictoryScene, GameOverScene],
   render: {
     antialias: true,
     pixelArt: false,
@@ -46,6 +47,7 @@ const config: Phaser.Types.Core.GameConfig = {
 document.addEventListener(
   'touchmove',
   (e) => {
+    if (e.target instanceof Element && e.target.closest('.game-screen')) return;
     e.preventDefault();
   },
   { passive: false },
@@ -69,3 +71,15 @@ declare global {
 
 const game = new Phaser.Game(config);
 window.__khayilGame = game;
+
+// Mobile browsers may resize the containing element without a screen-orientation event.
+const container = document.getElementById('game-container')!;
+const syncViewport = (): void => {
+  const size = viewportSize();
+  if (game.scale.width !== size.width || game.scale.height !== size.height) {
+    game.scale.resize(size.width, size.height);
+  }
+};
+const viewportObserver = new ResizeObserver(syncViewport);
+viewportObserver.observe(container);
+game.events.once(Phaser.Core.Events.DESTROY, () => viewportObserver.disconnect());

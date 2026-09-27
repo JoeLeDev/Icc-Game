@@ -1,6 +1,7 @@
 import type Phaser from 'phaser';
 import type { LayoutMetrics } from '../config/responsiveLayout';
 import { DEPTH } from './RoadProjection';
+import { Storage } from '../utils/Storage';
 
 /** Retours visuels, particules et vibration d'une partie. */
 export class GameFeedback {
@@ -64,20 +65,22 @@ export class GameFeedback {
   speedBanner(equipmentCount: number): void {
     this.speedBannerText.setText(`VITESSE AUGMENTÉE — ${equipmentCount}/7`).setAlpha(1);
     this.scene.tweens.add({ targets: this.speedBannerText, alpha: 0, duration: 1600, delay: 800 });
-    this.scene.cameras.main.flash(200, 255, 45, 149, false, undefined, this.scene);
+    if (!Storage.getReducedMotion()) this.scene.cameras.main.flash(200, 255, 45, 149, false, undefined, this.scene);
   }
 
   flashScreen(color: number, alpha: number): void {
+    if (Storage.getReducedMotion()) return;
     this.flash.setFillStyle(color, 1).setAlpha(Math.min(0.2, alpha));
     this.scene.tweens.killTweensOf(this.flash);
     this.scene.tweens.add({ targets: this.flash, alpha: 0, duration: 220 });
   }
 
   burst(x: number, y: number): void {
-    this.particles.emitParticleAt(x, y, 18);
+    this.particles.emitParticleAt(x, y, Storage.getReducedMotion() ? 4 : 18);
   }
 
   vibrate(ms: number): void {
+    if (Storage.getReducedMotion()) return;
     try { navigator.vibrate?.(ms); } catch { /* navigateur non compatible */ }
   }
 }

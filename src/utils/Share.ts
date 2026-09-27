@@ -22,9 +22,11 @@ export async function shareResult(text: string): Promise<'shared' | 'copied' | '
       ta.style.left = '-9999px';
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      return 'copied';
+      try {
+        return document.execCommand('copy') ? 'copied' : 'failed';
+      } finally {
+        ta.remove();
+      }
     } catch {
       return 'failed';
     }

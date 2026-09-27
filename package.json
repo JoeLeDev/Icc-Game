@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "assets:webp": "node scripts/convert-assets.mjs",
     "lint": "eslint .",
+    "lighthouse:mobile": "lighthouse http://127.0.0.1:4173/ --only-categories=performance --preset=perf --max-wait-for-load=10000 --output=html --output-path=reports/lighthouse-mobile.html --chrome-flags=\"--headless --no-sandbox\"",
     "check": "npm run lint && npm test && npm run build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -20,6 +22,8 @@
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
     "eslint": "^10.11.0",
+    "lighthouse": "^13.5.0",
+    "sharp": "^0.35.5",
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.70.1",
     "vite": "^6.0.5",

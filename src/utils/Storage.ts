@@ -14,13 +14,14 @@ export interface LocalScore {
   date: string;
   score?: number;
   grade?: FinalGrade;
+  difficulty?: DifficultyId;
 }
 
 const memory = new Map<string, string>();
 
 function get(key: string): string | null {
   try {
-    return localStorage.getItem(key) ?? memory.get(key) ?? null;
+    return memory.get(key) ?? localStorage.getItem(key) ?? null;
   } catch {
     return memory.get(key) ?? null;
   }
@@ -48,6 +49,13 @@ function isLocalScore(value: unknown): value is LocalScore {
 }
 
 export const Storage = {
+  getReducedMotion(): boolean {
+    const stored = get('khayil-reduced-motion');
+    return stored === null ? (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) : stored === '1';
+  },
+
+  setReducedMotion(reduced: boolean): void { set('khayil-reduced-motion', reduced ? '1' : '0'); },
+
   getSoundEnabled(): boolean {
     const v = get(CONFIG.storage.soundKey);
     return v === null ? true : v === '1';
@@ -76,10 +84,11 @@ export const Storage = {
     if (m > best) set(CONFIG.storage.bestScoreKey, String(Math.floor(m)));
   },
 
-  getLeaderboard(): LocalScore[] {
+  getLeaderboard(difficulty?: DifficultyId | 'legacy'): LocalScore[] {
     try {
       const parsed: unknown = JSON.parse(get(CONFIG.storage.leaderboardKey) || '[]');
-      return Array.isArray(parsed) ? parsed.filter(isLocalScore) : [];
+      const scores = Array.isArray(parsed) ? parsed.filter(isLocalScore) : [];
+      return scores.filter((entry) => !difficulty || (difficulty === 'legacy' ? !isDifficultyId(entry.difficulty) : entry.difficulty === difficulty));
     } catch {
       return [];
     }
@@ -94,7 +103,14 @@ export const Storage = {
         b.distance - a.distance ||
         b.equipment - a.equipment,
     );
-    set(CONFIG.storage.leaderboardKey, JSON.stringify(board.slice(0, 10)));
+    const counts = new Map<string, number>();
+    const retained = board.filter((score) => {
+      const key = isDifficultyId(score.difficulty) ? score.difficulty : 'legacy';
+      const count = (counts.get(key) ?? 0) + 1;
+      counts.set(key, count);
+      return count <= 10;
+    });
+    set(CONFIG.storage.leaderboardKey, JSON.stringify(retained));
     this.setBestDistance(entry.distance);
   },
 };

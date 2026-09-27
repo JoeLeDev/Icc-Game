@@ -1,109 +1,28 @@
 import Phaser from 'phaser';
-import { EQUIPMENTS } from '../config/gameConfig';
 import { SCORE } from '../config/scoring';
-import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
-import { applyDisplayBox, applyHudEquipmentIcon } from '../systems/SpriteDisplay';
+import { button, element, screen } from '../ui/Screen';
 import { audio } from '../utils/AudioManager';
 
 export class TutorialScene extends Phaser.Scene {
-  constructor() {
-    super('Tutorial');
-  }
-
+  constructor() { super('Tutorial'); }
   create(): void {
-    const W = this.scale.width;
-    const H = this.scale.height;
-    const layout = computeLayout(W, H, readSafeAreaInsets());
-    setCurrentLayout(layout);
-
-    this.add.rectangle(W / 2, H / 2, W, H, 0x070412, 0.96);
-
-    this.add
-      .text(W / 2, layout.padTop + 36, 'COMMENT JOUER', {
-        fontFamily: 'Orbitron',
-        fontSize: '20px',
-        color: '#ff2d95',
-      })
-      .setOrigin(0.5);
-
-    const sections: { title: string; body: string }[] = [
-      {
-        title: 'Déplacement',
-        body: 'Swipe ← → ou flèches / A D pour changer de voie. Après un choc ou une attaque sur une moto, tu rebondis sur ta voie précédente.',
-      },
-      {
-        title: 'Objectif',
-        body: 'Récupère les 7 équipements d’Éphésiens 6. Plus tu en as, plus la route s’intensifie. À 7/7 : conquête finale.',
-      },
-      {
-        title: 'Dangers',
-        body: 'Voitures, tonneaux, colère, rejet (voie fermée). Les motos ennemies (dépression / peur) restent à ta hauteur, te tirent toutes les 3 s (chaque coup de flanc repousse leur tir), et se vainquent avec 2 coups de flanc.',
-      },
-      {
-        title: 'Doutes (?)',
-        body: `Passe dessus pour les dissiper : +${SCORE.perDoubt} pts. Ils améliorent ton score et ta note finale (S à E).`,
-      },
-      {
-        title: 'Bonus & Amour',
-        body: 'Bouclier, vie, aimant, ralenti, boost. L’Amour ❤ est rare : invulnérabilité temporaire totale.',
-      },
-      {
-        title: 'Score & note',
-        body: 'Distance, doutes, esquives, équipements et Amour font ton score. En fin de partie tu reçois une note (Conquérante → À relever).',
-      },
+    const ui = screen(this, 'Comment jouer', 'tutorial-screen');
+    const sections = [
+      ['Déplacement', 'Swipe ← → ou flèches / A D pour changer de voie. Après un choc ou une attaque sur une moto, tu rebondis sur ta voie précédente.'],
+      ['Objectif', 'Récupère les 7 équipements d’Éphésiens 6. Plus tu en as, plus la route s’intensifie. À 7/7 : conquête finale.'],
+      ['Dangers', 'Évite les voitures, tonneaux et zones de feu. Les motos ennemies restent à ta hauteur et tirent toutes les 3 secondes. Deux coups de flanc les vainquent ; chaque coup repousse leur tir. Un choc arrière te blesse uniquement : la moto adverse reste intacte.'],
+      ['Doutes (?)', `Passe dessus pour les dissiper : +${SCORE.perDoubt} points. Ils améliorent ta note finale.`],
+      ['Bonus et Amour', 'Bouclier, vie, aimant, ralenti et boost t’aident. L’Amour ❤ donne une invulnérabilité temporaire totale.'],
+      ['Score et commandes', 'Distance, doutes, esquives et équipements contribuent au score. Échap met la partie en pause. Dans les menus, utilise Tab puis Entrée ou Espace.'],
     ];
-
-    let y = layout.padTop + 70;
-    for (const s of sections) {
-      this.add
-        .text(28, y, s.title, {
-          fontFamily: 'Orbitron',
-          fontSize: '12px',
-          color: '#00e5ff',
-        })
-        .setOrigin(0, 0);
-      y += 18;
-      const body = this.add
-        .text(28, y, s.body, {
-          fontFamily: 'Outfit',
-          fontSize: '12px',
-          color: '#e1bee7',
-          wordWrap: { width: W - 56 },
-          lineSpacing: 3,
-        })
-        .setOrigin(0, 0);
-      y += body.height + 14;
+    const sectionsRoot = element('div', '', 'tutorial-sections');
+    for (const [title, text] of sections) {
+      const section = element('section');
+      section.append(element('h2', title), element('p', text));
+      sectionsRoot.append(section);
     }
-
-    EQUIPMENTS.forEach((eq, i) => {
-      const icon = this.add.image(36 + i * 44, H - layout.padBottom - 108, `eq-icon-${eq.id}`);
-      applyHudEquipmentIcon(icon);
-    });
-    const love = this.add.image(W - 36, H - layout.padBottom - 108, 'love');
-    applyDisplayBox(love, layout.hudIconSize);
-
-    const play = this.add
-      .rectangle(W / 2, H - layout.padBottom - 48, 200, 44, 0x9b59ff)
-      .setStrokeStyle(2, 0xff2d95)
-      .setInteractive({ useHandCursor: true });
-    this.add
-      .text(W / 2, H - layout.padBottom - 48, 'JOUER', {
-        fontFamily: 'Orbitron',
-        fontSize: '16px',
-        color: '#fff',
-      })
-      .setOrigin(0.5);
-    play.on('pointerdown', () => {
-      audio.ui();
-      this.scene.start('Game');
-    });
-
-    const back = this.add
-      .text(28, layout.padTop + 8, '←', { fontSize: '26px', color: '#fff' })
-      .setInteractive({ useHandCursor: true });
-    back.on('pointerdown', () => {
-      audio.ui();
-      this.scene.start('Menu');
-    });
+    ui.content.append(sectionsRoot);
+    button(ui.actions, 'JOUER', () => { audio.ui(); this.scene.start('Prepare'); });
+    button(ui.actions, 'Accueil', () => this.scene.start('Menu'), true);
   }
 }

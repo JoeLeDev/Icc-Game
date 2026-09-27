@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { generateTextures, tryLoadExternalAssets } from '../systems/AssetFactory';
+import { generateTextures, tryLoadMenuAssets } from '../systems/AssetFactory';
 import { computeLayout, readSafeAreaInsets, setCurrentLayout } from '../config/responsiveLayout';
 
 export class BootScene extends Phaser.Scene {
@@ -35,12 +35,12 @@ export class BootScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    void tryLoadExternalAssets(this).then((loaded) => {
+    void tryLoadMenuAssets(this).then((loaded) => {
       if (import.meta.env.DEV && loaded.length) {
-        console.info(`[Khayil] ${loaded.length} assets PNG chargés`, loaded);
+        console.info(`[Khayil] ${loaded.length} assets WebP chargés`, loaded);
       }
     }).finally(() => {
-      this.time.delayedCall(200, () => this.scene.start('Menu'));
+      if (this.scene.isActive()) this.time.delayedCall(200, () => this.scene.start('Menu'));
     });
   }
 }

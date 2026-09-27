@@ -1,3 +1,4 @@
+import { ImageCache } from './ImageCache';
 import Phaser from 'phaser';
 import { EQUIPMENTS } from '../config/gameConfig';
 
@@ -107,67 +108,83 @@ export function generateTextures(scene: Phaser.Scene): void {
 }
 
 /** Tente de remplacer des clés procédurales par des PNG dans /assets/ si présents. */
+type AssetCandidate = { key: string; path: string };
+const imageSources = new ImageCache();
+const promoted = new WeakMap<Phaser.Textures.TextureManager, Set<string>>();
+
+const DEFERRED_DECOR_ASSETS: AssetCandidate[] = [
+  { key: 'prop-lamp', path: 'assets/prop_lamp.webp' },
+  { key: 'prop-palm', path: 'assets/prop_palm.webp' },
+  { key: 'tree_01', path: 'assets/tree_01.webp' },
+  { key: 'tree_02', path: 'assets/tree_02.webp' },
+  { key: 'skyline', path: 'assets/skyline.webp' },
+  { key: 'dressing-city', path: 'assets/Building.webp' },
+  { key: 'building_01', path: 'assets/building_01.webp' },
+  { key: 'building_02', path: 'assets/building_02.webp' },
+  { key: 'building_03', path: 'assets/building_03.webp' },
+];
+
+/** Charge les sprites nécessaires avant l'affichage du menu. */
 export async function tryLoadExternalAssets(scene: Phaser.Scene): Promise<string[]> {
-  const candidates: { key: string; path: string }[] = [
-    { key: 'player', path: 'assets/player_moto.png' },
-    { key: 'car', path: 'assets/car.png' },
-    { key: 'truck', path: 'assets/truck.png' },
-    { key: 'barrel', path: 'assets/barrel.png' },
-    { key: 'barrier', path: 'assets/barrier.png' },
-    { key: 'cone', path: 'assets/cone.png' },
-    { key: 'hole', path: 'assets/hole.png' },
-    { key: 'love', path: 'assets/love_heart.png' },
-    { key: 'bonus-magnet', path: 'assets/bonus_magnet.png' },
-    { key: 'bonus-shield', path: 'assets/bonus_shield.png' },
-    { key: 'bonus-life', path: 'assets/bonus_life.png' },
-    { key: 'bonus-slowmo', path: 'assets/bonus_slowmo.png' },
-    { key: 'bonus-boost', path: 'assets/bonus_boost.png' },
-    { key: 'depression', path: 'assets/foe.png' },
-    { key: 'calomnie', path: 'assets/enemy_calomnie.png' },
-    { key: 'peur', path: 'assets/foe.png' },
-    { key: 'foe', path: 'assets/foe.png' },
-    { key: 'doute', path: 'assets/enemy_doute.png' },
-    { key: 'projectile', path: 'assets/fx_projectile.png' },
-    { key: 'colere', path: 'assets/fx_fire.png' },
-    { key: 'prop-lamp', path: 'assets/prop_lamp.png' },
-    { key: 'prop-palm', path: 'assets/prop_palm.png' },
-    { key: 'tree_01', path: 'assets/tree_01.png' },
-    { key: 'tree_02', path: 'assets/tree_02.png' },
-    { key: 'skyline', path: 'assets/skyline.png' },
-    // Background global desktop (plein écran) — Building.png en attendant un panorama dédié
-    { key: 'dressing-city', path: 'assets/Building.png' },
-    { key: 'building_01', path: 'assets/building_01.png' },
-    { key: 'building_02', path: 'assets/building_02.png' },
-    { key: 'building_03', path: 'assets/building_03.png' },
+  const candidates: AssetCandidate[] = [
+    { key: 'car', path: 'assets/car.webp' }, { key: 'truck', path: 'assets/truck.webp' },
+    { key: 'barrel', path: 'assets/barrel.webp' }, { key: 'barrier', path: 'assets/barrier.webp' },
+    { key: 'cone', path: 'assets/cone.webp' }, { key: 'hole', path: 'assets/hole.webp' },
+    { key: 'love', path: 'assets/love_heart.webp' },
+    { key: 'bonus-magnet', path: 'assets/bonus_magnet.webp' }, { key: 'bonus-shield', path: 'assets/bonus_shield.webp' },
+    { key: 'bonus-life', path: 'assets/bonus_life.webp' }, { key: 'bonus-slowmo', path: 'assets/bonus_slowmo.webp' }, { key: 'bonus-boost', path: 'assets/bonus_boost.webp' },
+    { key: 'depression', path: 'assets/foe.webp' }, { key: 'calomnie', path: 'assets/enemy_calomnie.webp' },
+    { key: 'peur', path: 'assets/foe.webp' }, { key: 'foe', path: 'assets/foe.webp' },
+    { key: 'doute', path: 'assets/enemy_doute.webp' }, { key: 'projectile', path: 'assets/fx_projectile.webp' }, { key: 'colere', path: 'assets/fx_fire.webp' },
   ];
   EQUIPMENTS.forEach((eq) => {
-    const path = `assets/eq_${eq.id}.png`;
+    const path = `assets/eq_${eq.id}.webp`;
     candidates.push({ key: `eq-${eq.id}`, path });
     // Même source PNG — la taille HUD est forcée à l’affichage, pas à la texture.
     candidates.push({ key: `eq-icon-${eq.id}`, path });
   });
 
-  // Les gros PNG ne doivent pas former une chaîne de requêtes réseau. Une seule
-  // promesse est aussi partagée par les textures monde + HUD d'un équipement.
-  const sources = new Map<string, Promise<HTMLImageElement | null>>();
-  const sourceFor = (path: string): Promise<HTMLImageElement | null> => {
-    let source = sources.get(path);
-    if (!source) {
-      source = loadImage(path);
-      sources.set(path, source);
-    }
-    return source;
-  };
+  return loadCandidates(scene, candidates, true);
+}
+
+/** Texture strictement nécessaire au menu ; le reste attend le clic « Jouer ». */
+export async function tryLoadMenuAssets(scene: Phaser.Scene, required = false): Promise<string[]> {
+  return loadCandidates(scene, [{ key: 'player', path: 'assets/player_moto.webp' }], required);
+}
+
+/** Décors lourds, téléchargés pendant que le menu est déjà utilisable. */
+export async function tryLoadDeferredDecor(scene: Phaser.Scene, required = false): Promise<string[]> {
+  return loadCandidates(scene, DEFERRED_DECOR_ASSETS, required);
+}
+
+async function loadCandidates(scene: Phaser.Scene, candidates: AssetCandidate[], required = false): Promise<string[]> {
+  let keys = promoted.get(scene.textures);
+  if (!keys) { keys = new Set(); promoted.set(scene.textures, keys); }
+  const installed = keys;
+  let active = true;
+  const cancel = (): void => { active = false; };
+  scene.events.once('shutdown', cancel);
 
   const results = await Promise.all(
     candidates.map(async ({ key, path }) => {
-      const source = await sourceFor(path);
-      if (!source) return null;
-      promoteExternalTexture(scene, key, source);
-      return path;
+      try {
+        if (installed.has(key)) return path;
+        const source = await imageSources.load(path);
+        if (!source || !active) return null;
+        if (!installed.has(key)) {
+          promoteExternalTexture(scene, key, source);
+          installed.add(key);
+        }
+        return path;
+      } catch {
+        // Settle every candidate before offering the fallback or another attempt.
+        return null;
+      }
     }),
   );
 
+  scene.events.off('shutdown', cancel);
+  if (required && results.some(path => path === null)) throw new Error('Assets unavailable');
   return [...new Set(results.filter((path): path is string => path !== null))];
 }
 
@@ -196,14 +213,6 @@ export function fitTextureScale(scene: Phaser.Scene, key: string, fallbackTarget
   return h <= 130 ? 1 : 64 / h;
 }
 
-function loadImage(path: string): Promise<HTMLImageElement | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = path;
-  });
-}
 
 function drawHeart(g: Phaser.GameObjects.Graphics, cx: number, cy: number, s: number, color: number): void {
   g.fillStyle(color, 1);
@@ -595,4 +604,12 @@ function drawSideBuilding(g: Phaser.GameObjects.Graphics): void {
   g.fillRect(18, 24, 5, 5);
   g.fillStyle(0xffd54f, 0.4);
   g.fillRect(8, 34, 5, 5);
+}
+
+/** All entry points wait here; missing images retain the procedural fallback. */
+export async function prepareGameAssets(scene: Phaser.Scene): Promise<boolean> {
+  const results = await Promise.allSettled([
+    tryLoadExternalAssets(scene), tryLoadDeferredDecor(scene, true), tryLoadMenuAssets(scene, true),
+  ]);
+  return results.every(result => result.status === 'fulfilled');
 }
