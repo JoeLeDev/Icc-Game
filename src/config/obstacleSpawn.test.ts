@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_SPAWNS_WITHOUT_MIDDLE,
   ObstacleLaneDistributor,
-  PLAYER_LANE_TARGET_CHANCE,
   chooseObstacleLanesControlled,
   isLaneSafeAtDepth,
   preferredDoublePairs,
@@ -10,9 +9,63 @@ import {
 } from './obstacleSpawn';
 import { choosePickupLane } from './obstacleSpawn';
 import { Rng } from '../utils/Rng';
+import { CONFIG, getScrollSpeed, getSpawnReactionTime } from './gameConfig';
+import { horizonSpawnZ } from './laneOccupancy';
+import { DIFFICULTY_IDS } from './difficulty';
+import { canReachLane, timeToReact } from '../systems/SpawnFairness';
 import type { RoadOccupant } from '../systems/SpawnFairness';
 
 describe('obstacleSpawn — distribution contrôlée', () => {
+  it.each(DIFFICULTY_IDS)('alterne les trois voies dès le départ en difficulté %s', difficulty => {
+    const distributor = new ObstacleLaneDistributor();
+    const scrollSpeed = getScrollSpeed(0, false, false, difficulty);
+    const spawnZ = horizonSpawnZ(420);
+    const rng = new Rng(42);
+    const lanes: number[] = [];
+    let existing: RoadOccupant[] = [];
+    for (let i = 0; i < 9; i++) {
+      existing = existing.map(o => ({ ...o, z: o.z - 340 })).filter(o => o.z > 0);
+      const decision = chooseObstacleLanesControlled({ tier: 0, playerLane: 1, closedLane: null, existing, spawnZ, scrollSpeed, rng, distributor });
+      expect(decision).not.toBeNull();
+      lanes.push(...decision!.lanes);
+      distributor.recordFinal(decision!.lanes);
+      for (const lane of decision!.lanes) existing.push({ lane, z: spawnZ, role: 'danger' });
+      if (decision!.lanes.includes(1)) {
+        expect(canReachLane(1, 0, timeToReact(spawnZ, scrollSpeed, getSpawnReactionTime(scrollSpeed)), CONFIG.player.laneSwitchDuration)).toBe(true);
+      }
+    }
+    expect(lanes).toEqual([1, 0, 2, 1, 0, 2, 1, 0, 2]);
+    distributor.reset();
+    expect(distributor.singleLaneOrder()[0]).toBe(1);
+  });
+
+  it('ne compte pas une apparition annulée comme un obstacle central', () => {
+    const distributor = new ObstacleLaneDistributor();
+    const input = { tier: 0, playerLane: 1, closedLane: null, existing: [], spawnZ: horizonSpawnZ(420), scrollSpeed: getScrollSpeed(0, false, false), rng: new Rng(7), distributor };
+    expect(chooseObstacleLanesControlled(input)?.lanes).toEqual([1]);
+    distributor.recordFinal([]);
+    expect(distributor.counters.center).toBe(0);
+    expect(chooseObstacleLanesControlled(input)?.lanes).toEqual([1]);
+  });
+
+  it('saute une voie fermée et la réintègre quand elle redevient disponible', () => {
+    const distributor = new ObstacleLaneDistributor();
+    const input = { tier: 0, playerLane: 0, closedLane: 1 as number | null, existing: [], spawnZ: horizonSpawnZ(420), scrollSpeed: getScrollSpeed(0, false, false), rng: new Rng(7), distributor };
+    const first = chooseObstacleLanesControlled(input)!;
+    expect(first.lanes).not.toContain(1);
+    distributor.recordFinal(first.lanes);
+    input.closedLane = null;
+    const next = chooseObstacleLanesControlled(input)!;
+    distributor.recordFinal(next.lanes);
+    expect(chooseObstacleLanesControlled(input)?.lanes).toContain(1);
+  });
+
+  it('n’impose pas le centre si le temps de changement de voie est insuffisant', () => {
+    const distributor = new ObstacleLaneDistributor();
+    const decision = chooseObstacleLanesControlled({ tier: 0, playerLane: 1, closedLane: null, existing: [], spawnZ: 30, scrollSpeed: 800, rng: new Rng(2), distributor });
+    expect(getSpawnReactionTime(800)).toBeGreaterThanOrEqual(CONFIG.spawn.minReactionTime);
+    expect(decision?.lanes).not.toContain(1);
+  });
   it('isLaneSafeAtDepth autorise la même lane si Δz ≥ gap', () => {
     const existing: RoadOccupant[] = [{ lane: 1, z: 100, role: 'danger' }];
     expect(
@@ -40,6 +93,7 @@ describe('obstacleSpawn — distribution contrôlée', () => {
         distributor: dist,
       });
       expect(d).not.toBeNull();
+      dist.recordFinal(d!.lanes);
       if (d!.lanes.includes(1)) without = 0;
       else {
         without++;
@@ -58,7 +112,7 @@ describe('obstacleSpawn — distribution contrôlée', () => {
         tier: 3,
       });
       const hitRate = sim.playerLaneHits / Math.max(1, sim.singles + sim.counters.doubles);
-      // Au moins ~28 % des événements touchent la lane joueur (cible 45 % singles + doubles)
+      // Singles alternés (~1/3 par voie) et doubles orientés vers la voie joueur.
       expect(hitRate).toBeGreaterThan(0.28);
     }
   });
@@ -156,6 +210,5 @@ describe('obstacleSpawn — distribution contrôlée', () => {
       expect(sim.distribution.right).toBeGreaterThan(100);
       expect(sim.maxStreakWithoutMiddle).toBeLessThanOrEqual(MAX_SPAWNS_WITHOUT_MIDDLE);
     }
-    expect(PLAYER_LANE_TARGET_CHANCE).toBeCloseTo(0.45, 5);
   });
 });

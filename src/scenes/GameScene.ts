@@ -11,6 +11,7 @@ import {
   EQUIPMENTS,
   LANES,
   getScrollSpeed,
+  getSpawnReactionTime,
   getThreatTimeScale,
   getTier,
   isAttackUnlocked,
@@ -898,7 +899,7 @@ export class GameScene extends Phaser.Scene {
     });
     if (!decision) return;
 
-    let spawned = 0;
+    const spawnedLanes: number[] = [];
     for (const lane of decision.lanes) {
       // Double-check spatial (déjà validé, mais évite race avec autres spawns)
       if (this.laneBusyNear(lane, z)) continue;
@@ -908,10 +909,11 @@ export class GameScene extends Phaser.Scene {
       else if (tier >= 3 && r < 0.18) kind = 'truck';
       else if (r < 0.35) kind = this.rng.pick(['barrier', 'cone', 'hole']);
       this.spawnObstacle(lane, z, kind);
-      spawned++;
+      spawnedLanes.push(lane);
     }
 
-    if (spawned >= 2) {
+    this.obstacleDistributor.recordFinal(spawnedLanes);
+    if (spawnedLanes.length >= 2) {
       this.spawnDirector.applyBreath(true);
     }
   }
@@ -971,7 +973,7 @@ export class GameScene extends Phaser.Scene {
       bandZ: z,
       scrollSpeed: this.scrollSpeed,
       switchDuration: CONFIG.player.laneSwitchDuration,
-      reactionTime: CONFIG.spawn.reactionTime,
+      reactionTime: getSpawnReactionTime(this.scrollSpeed),
       safetyBand: CONFIG.spawn.safetyBand,
       rng: this.rng,
     });
@@ -995,7 +997,7 @@ export class GameScene extends Phaser.Scene {
       bandZ: z,
       scrollSpeed: this.scrollSpeed,
       switchDuration: CONFIG.player.laneSwitchDuration,
-      reactionTime: CONFIG.spawn.reactionTime,
+      reactionTime: getSpawnReactionTime(this.scrollSpeed),
       safetyBand: CONFIG.spawn.safetyBand,
       rng: this.rng,
     });

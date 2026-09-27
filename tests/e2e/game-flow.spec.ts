@@ -198,6 +198,20 @@ test('le viewport de gameplay reste plafonné sur desktop', async ({ page }) => 
     .toMatchObject({ browserWidth: 1280, gameWidth: 640 });
 });
 
+for (const difficulty of ['Facile', 'Normal', 'Difficile']) {
+  test(`les premiers obstacles alternent au centre, à gauche et à droite en ${difficulty}`, async ({ page }) => {
+    await menu(page);
+    await page.getByRole('button', { name: difficulty, exact: true }).click();
+    await play(page);
+    await expect.poll(() => page.evaluate(() => {
+      const game = window.__khayilGame?.scene.getScene('Game') as unknown as {
+        obstacleDistributor: { recentObstacleLanes: number[] };
+      };
+      return game.obstacleDistributor.recentObstacleLanes.slice(0, 3);
+    }), { timeout: 12000 }).toEqual([1, 0, 2]);
+  });
+}
+
 test('un geste tactile change de voie', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', 'CDP touch injection is Chromium-only; WebKit covers native touch taps.');
   await menu(page);

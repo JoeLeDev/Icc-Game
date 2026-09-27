@@ -7,9 +7,10 @@
  * 3. `blockedByFoes` bloquait toute la lane moto sans gap Z ;
  * 4. Aucun anti-streak → longues séries sans obstacle central ;
  * 5. Fallback après rejet poussait souvent vers les côtés.
+ * 6. Marge de réaction fixe supérieure au trajet aux vitesses normale/difficile.
  */
 
-import { CONFIG, LANES, getTier } from './gameConfig';
+import { CONFIG, LANES, getTier, getSpawnReactionTime } from './gameConfig';
 import {
   type RoadOccupant,
   canReachLane,
@@ -20,8 +21,8 @@ import { Rng } from '../utils/Rng';
 
 export const OBSTACLE_HISTORY_SIZE = 8;
 export const MAX_SPAWNS_WITHOUT_MIDDLE = 3;
-/** Probabilité qu’un single cible la lane actuelle du joueur */
-export const PLAYER_LANE_TARGET_CHANCE = 0.45;
+/** Alternance des obstacles simples dès le démarrage. */
+const SINGLE_LANE_ORDER = [1, 0, 2] as const;
 
 export type ObstacleSpawnMode = 'single' | 'double';
 
@@ -101,6 +102,12 @@ export function isLaneSafeAtDepth(
 }
 
 export class ObstacleLaneDistributor {
+  private nextSingle = 0;
+
+  /** Centre, gauche, droite ; les validations peuvent sauter une voie indisponible. */
+  singleLaneOrder(): number[] {
+    return SINGLE_LANE_ORDER.map((_, offset) => SINGLE_LANE_ORDER[(this.nextSingle + offset) % LANES]);
+  }
   /** Historique des lanes FINALES (un entry par objet placé) */
   recentObstacleLanes: number[] = [];
   /** Spawns d’événements (single ou double) sans aucun obstacle centre */
@@ -116,6 +123,7 @@ export class ObstacleLaneDistributor {
   };
 
   reset(): void {
+    this.nextSingle = 0;
     this.recentObstacleLanes = [];
     this.spawnsWithoutMiddle = 0;
     this.counters = {
@@ -130,6 +138,9 @@ export class ObstacleLaneDistributor {
   }
 
   recordFinal(lanes: number[]): void {
+    if (!lanes.length) return;
+    const last = lanes[lanes.length - 1];
+    this.nextSingle = (SINGLE_LANE_ORDER.findIndex(lane => lane === last) + 1) % LANES;
     const hadMiddle = lanes.includes(1);
     if (hadMiddle) this.spawnsWithoutMiddle = 0;
     else {
@@ -152,16 +163,7 @@ export class ObstacleLaneDistributor {
     else if (lanes.length === 1) this.counters.singles++;
   }
 
-  /** Pression historique : lanes sous-représentées → score ↑ */
-  historyBoost(lane: number): number {
-    const hist = this.recentObstacleLanes;
-    if (hist.length < 3) return 1;
-    const count = hist.filter((l) => l === lane).length;
-    const expected = hist.length / 3;
-    if (count < expected - 0.5) return 1.55;
-    if (count > expected + 1.2) return 0.55;
-    return 1;
-  }
+
 }
 
 export type ChooseObstacleInput = {
@@ -235,7 +237,7 @@ function validatePattern(
       bandZ: input.spawnZ,
       scrollSpeed: input.scrollSpeed,
       switchDuration: CONFIG.player.laneSwitchDuration,
-      reactionTime: CONFIG.spawn.reactionTime,
+      reactionTime: getSpawnReactionTime(input.scrollSpeed),
       safetyBand: Math.max(CONFIG.spawn.safetyBand, minGap),
     })
   ) {
@@ -256,7 +258,7 @@ function validatePattern(
       input.distributor.counters.impossibleAvoided++;
       return null;
     }
-    const time = timeToReact(input.spawnZ, input.scrollSpeed, CONFIG.spawn.reactionTime);
+    const time = timeToReact(input.spawnZ, input.scrollSpeed, getSpawnReactionTime(input.scrollSpeed));
     if (!canReachLane(input.playerLane, escape, time, CONFIG.player.laneSwitchDuration)) {
       rejected.push({ lane: unique, reason: `escape_lane_${escape}_unreachable` });
       input.distributor.counters.impossibleAvoided++;
@@ -267,32 +269,9 @@ function validatePattern(
   return unique;
 }
 
-function pickSingleLane(input: ChooseObstacleInput, forceMiddle: boolean): number | null {
-  const { rng, playerLane, distributor } = input;
-  const others = [0, 1, 2].filter((l) => l !== playerLane);
-
-  if (forceMiddle) return 1;
-
-  // 45 % lane joueur, 27.5 % chacune des autres — puis × historyBoost
-  const weights = [0, 1, 2].map((lane) => {
-    let w = lane === playerLane ? PLAYER_LANE_TARGET_CHANCE : (1 - PLAYER_LANE_TARGET_CHANCE) / 2;
-    w *= distributor.historyBoost(lane);
-    // Anti-streak soft : si centre absent récemment, boost centre
-    if (lane === 1 && distributor.spawnsWithoutMiddle >= 2) w *= 1.4;
-    return w;
-  });
-  const sum = weights.reduce((a, b) => a + b, 0);
-  let r = rng.next() * sum;
-  for (let i = 0; i < 3; i++) {
-    r -= weights[i]!;
-    if (r <= 0) return i;
-  }
-  return rng.pick(others.length ? others : [playerLane]);
-}
-
 /**
  * Choix FINAL des lanes obstacle (après validations).
- * Ne se contente pas d’un tirage middleLaneBias isolé.
+ * L'appelant enregistre avec recordFinal uniquement les objets réellement placés.
  */
 export function chooseObstacleLanesControlled(input: ChooseObstacleInput): ObstacleSpawnDecision | null {
   const t = getTier(input.tier);
@@ -338,15 +317,10 @@ export function chooseObstacleLanesControlled(input: ChooseObstacleInput): Obsta
     }
   }
 
-  // ——— Singles avec ciblage joueur + historique ———
+  // ——— Singles alternés ; les validations de sécurité restent prioritaires ———
   if (!finalLanes) {
     mode = 'single';
-    const order: number[] = [];
-    const first = pickSingleLane(input, false);
-    if (first != null) order.push(first);
-    for (const l of input.rng.shuffle([0, 1, 2])) {
-      if (!order.includes(l)) order.push(l);
-    }
+    const order = input.distributor.singleLaneOrder();
     for (const lane of order) {
       requested = [lane];
       finalLanes = validatePattern([lane], input, minGap, rejected);
@@ -371,8 +345,6 @@ export function chooseObstacleLanesControlled(input: ChooseObstacleInput): Obsta
     spawnsWithoutMiddle: input.distributor.spawnsWithoutMiddle,
     forcedMiddle: forceMiddle && finalLanes.includes(1),
   };
-
-  input.distributor.recordFinal(finalLanes);
 
   if (input.debug || isObstacleSpawnDebugEnabled()) {
     console.info('[obstacleSpawn]', {
@@ -446,6 +418,7 @@ export function simulateObstacleSpawns(opts: {
       debug: false,
     });
     if (!decision) continue;
+    dist.recordFinal(decision.lanes);
     if (decision.lanes.includes(playerLane)) playerLaneHits++;
     for (const lane of decision.lanes) {
       existing.push({ lane, z: spawnZ, role: 'danger' });

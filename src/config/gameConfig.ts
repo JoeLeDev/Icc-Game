@@ -72,8 +72,10 @@ export const CONFIG = {
     attackInterval: [99, 5, 4.5, 4, 3.5, 3, 2.5, 2],
     loveChance: 0.028,
     minGapFront: 200,
-    /** Temps de réaction joueur avant la zone dangereuse */
+    /** Marge de réaction à la vitesse de référence, ajustée à la vitesse courante. */
     reactionTime: 1.35,
+    /** Ne jamais descendre sous cette marge, même avec un boost. */
+    minReactionTime: 0.35,
     /** Marge de sécurité en unités monde autour d’un spawn */
     safetyBand: 95,
     /** Respiration après une attaque (ralentit obstacle + prochaine attaque) */
@@ -162,6 +164,14 @@ export function getTier(equipmentCount: number): DifficultyTier {
  * Ralenti prioritaire sur boost si les deux sont actifs.
  * La difficulté multiplie la base puis respecte maxScroll × maxScrollMul.
  */
+/** Les vitesses multipliées ne doivent pas interdire systématiquement la voie joueur. */
+export function getSpawnReactionTime(scrollSpeed: number): number {
+  return Math.max(
+    CONFIG.spawn.minReactionTime,
+    CONFIG.spawn.reactionTime * Math.min(1, CONFIG.speed.base / Math.max(1, scrollSpeed)),
+  );
+}
+
 export function getScrollSpeed(
   equipmentCount: number,
   boost: boolean,
