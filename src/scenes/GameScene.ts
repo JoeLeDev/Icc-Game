@@ -53,6 +53,7 @@ import {
   rememberBaseDisplay,
 } from '../systems/SpriteDisplay';
 import { WorldView } from '../systems/WorldView';
+import { BoostVisuals } from '../systems/BoostVisuals';
 import { GameFeedback } from '../systems/GameFeedback';
 import { PlayerController } from '../systems/PlayerController';
 import { SpawnDirector } from '../systems/SpawnDirector';
@@ -76,7 +77,7 @@ export class GameScene extends Phaser.Scene {
   private world!: WorldView;
   private player!: Phaser.GameObjects.Container;
   private playerSprite!: Phaser.GameObjects.Image;
-  private playerGlow!: Phaser.GameObjects.Arc;
+  private boostVisuals!: BoostVisuals;
   private loveAura!: Phaser.GameObjects.Arc;
   private playerShadow!: Phaser.GameObjects.Ellipse;
   private trail!: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -272,7 +273,6 @@ export class GameScene extends Phaser.Scene {
     rememberBaseDisplay(this.playerSprite);
     const pw = this.layout.playerDisplayWidth;
     this.playerShadow.setSize(pw * 0.85, 12);
-    this.playerGlow.setRadius(pw * 0.55);
     this.loveAura.setRadius(pw * 0.85);
     this.inviRing.setRadius(pw * 0.72);
     this.refreshPlayerHitbox();
@@ -418,8 +418,7 @@ export class GameScene extends Phaser.Scene {
     const y = this.world.proj.playerY;
     const pw = this.layout.playerDisplayWidth;
     this.playerShadow = this.add.ellipse(0, 40, pw * 0.85, 12, 0x000000, 0.45);
-    // Halo uniquement pendant le boost (invisible par défaut)
-    this.playerGlow = this.add.circle(0, 8, pw * 0.55, 0xff6e40, 0);
+    this.boostVisuals = new BoostVisuals(this);
     this.loveAura = this.add
       .circle(0, 0, pw * 0.85, 0xff80ab, 0)
       .setStrokeStyle(3, 0xff2d95, 0);
@@ -432,7 +431,7 @@ export class GameScene extends Phaser.Scene {
     this.refreshPlayerHitbox();
     this.player = this.add.container(this.targetX, y, [
       this.playerShadow,
-      this.playerGlow,
+      this.boostVisuals.graphics,
       this.loveAura,
       this.inviRing,
       this.playerSprite,
@@ -751,7 +750,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.lastSpeedTier = tier;
 
-    this.world.update(dt, this.scrollSpeed, boost);
+    this.world.update(dt, this.scrollSpeed, boost, this.reducedMotion);
     this.distance += (this.scrollSpeed * dt) / CONFIG.scoring.distancePerMeter;
     this.refreshHudScore();
     this.player.y = this.world.proj.playerY;
@@ -835,9 +834,9 @@ export class GameScene extends Phaser.Scene {
     this.loveAura.setStrokeStyle(3, 0xff2d95, love ? 0.9 : 0);
     if (love) this.loveAura.rotation += dt * 1.5;
 
-    // boost glow — visible seulement pendant le boost
+    // Exhaust follows the player's container; shutdown owns its graphics as usual.
     const boost = this.hasEffect('boost');
-    this.playerGlow.setFillStyle(0xff6e40, boost ? 0.35 : 0);
+    this.boostVisuals.update(dt, boost, this.reducedMotion, this.playerSprite.displayWidth, this.playerSprite.displayHeight);
   }
 
   private updateHudEffects(): void {
@@ -846,7 +845,7 @@ export class GameScene extends Phaser.Scene {
 
   private currentOccupants(): RoadOccupant[] {
     return this.entities
-      .filter((e) => !e.screenSpace)
+      .filter((e) => !e.screenSpace && !e.hit)
       .map((e) => ({
         lane: Math.round(e.lane),
         z: e.worldZ,
@@ -855,6 +854,7 @@ export class GameScene extends Phaser.Scene {
             ? ('collect' as const)
             : ('danger' as const),
         fromBehind: e.fromBehind,
+        reservesLane: isRammableEnemyKind(e.kind),
       }));
   }
 
@@ -919,6 +919,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnObstacle(lane: number, z: number, kind = 'car'): void {
+    if (this.motoFoeLanes().includes(lane)) return;
     let key = 'car';
     let entKind: EntityKind = 'obstacle';
     const baseScale = 1;
@@ -1343,8 +1344,9 @@ export class GameScene extends Phaser.Scene {
 
   private spawnReject(): void {
     if (this.closedLane !== null) return;
-    const candidates = [0, 1, 2].filter((l) => l !== this.lane);
-    const lane: number = this.rng.pick(candidates.length ? candidates : [0, 2]);
+    const candidates = this.freeLanes(this.motoFoeLanes()).filter((l) => l !== this.lane);
+    if (!candidates.length) return;
+    const lane = this.rng.pick(candidates);
     this.closedLane = lane;
     this.closeWarningRemaining = CONFIG.laneClosure.warningDuration;
     this.closeRemaining = CONFIG.laneClosure.warningDuration + CONFIG.laneClosure.duration;
@@ -1383,7 +1385,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnFromBehind(): void {
-    const free = this.freeLanes([]);
+    const free = this.freeLanes(this.motoFoeLanes());
     if (!free.length) return;
     const away = free.filter((l) => l !== this.lane);
     const lane = this.rng.pick(away.length ? away : free);
@@ -1402,7 +1404,7 @@ export class GameScene extends Phaser.Scene {
     };
     this.layoutEntity(ent);
     this.entityManager.add(ent);
-    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), this.H - 120, 'ARRIÈRE', '#ff5252', 'behind');
+    this.showDirectionalWarn(this.world.proj.laneScreenX(lane), this.H - 120, 'DÉPASSEMENT', '#ff5252', 'behind');
   }
 
   private triggerDistraction(): void {

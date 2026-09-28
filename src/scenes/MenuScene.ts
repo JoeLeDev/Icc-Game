@@ -4,6 +4,7 @@ import { tryLoadDeferredDecor } from '../systems/AssetFactory';
 import { audio } from '../utils/AudioManager';
 import { Storage } from '../utils/Storage';
 import { button, element, picture, screen } from '../ui/Screen';
+import '../ui/menu.css';
 
 export class MenuScene extends Phaser.Scene {
   private starting = false;
@@ -13,10 +14,22 @@ export class MenuScene extends Phaser.Scene {
     this.starting = false;
     void tryLoadDeferredDecor(this);
     const ui = screen(this, 'KHAYIL 2026', 'menu-screen');
+    const backdrop = element('div', '', 'menu-backdrop');
+    backdrop.setAttribute('aria-hidden', 'true');
+    backdrop.append(element('div', '', 'menu-horizon'), element('div', '', 'menu-road'));
+    ui.root.prepend(backdrop);
     ui.content.append(element('p', 'ÉQUIPÉE POUR CONQUÉRIR', 'tagline'));
-    picture(ui.content, 'assets/player_moto.webp', '', 'hero-moto');
+    const stage = element('div', '', 'menu-stage');
+    picture(stage, 'assets/player_moto.webp', '', 'hero-moto');
+    ui.content.append(stage);
     const best = Storage.getBestDistance();
-    ui.content.append(element('p', best > 0 ? `Record local : ${best} m` : 'Prête à conquérir ?', 'record'));
+    const record = element('div', '', 'menu-record');
+    const trophy = element('span', '🏆', 'menu-record-icon');
+    trophy.setAttribute('aria-hidden', 'true');
+    const value = element('div');
+    value.append(element('p', 'RECORD LOCAL'), element('strong', `${best} m`));
+    record.append(trophy, value);
+    stage.append(record);
     const choices = element('fieldset');
     choices.append(element('legend', 'Difficulté'));
     const row = element('div', '', 'choice-row');
@@ -30,16 +43,17 @@ export class MenuScene extends Phaser.Scene {
       return chip;
     });
     choices.append(row);
-    ui.content.append(choices);
-    button(ui.actions, 'JOUER', () => {
+    ui.actions.append(choices);
+    const play = button(ui.actions, 'JOUER', () => {
       if (this.starting) return;
       this.starting = true;
       audio.ui();
       this.scene.start('Prepare');
     });
+    play.setAttribute('aria-label', 'JOUER');
     button(ui.actions, 'Comment jouer', () => { audio.ui(); this.scene.start('Tutorial'); }, true);
     button(ui.actions, 'Classement local', () => this.showLeaderboard(ui.root), true);
-    const settings = element('div', '', 'choice-row');
+    const settings = element('div', '', 'choice-row menu-settings');
     const sound = button(settings, audio.isEnabled() ? 'Son : activé' : 'Son : coupé', () => {
       const on = audio.toggle();
       sound.textContent = on ? 'Son : activé' : 'Son : coupé';

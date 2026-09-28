@@ -111,13 +111,13 @@ export class WorldView {
     this.roadside = [];
   }
 
-  update(_dt: number, scrollSpeed: number, boosting: boolean): void {
+  update(_dt: number, scrollSpeed: number, boosting: boolean, reducedMotion = false): void {
     const worldDelta = scrollSpeed * _dt;
     this.dashOffset = (this.dashOffset + worldDelta * 0.45) % 48;
     this.redrawRoad(this.dashOffset);
     this.updateCityMid(worldDelta);
     this.updateRoadside(worldDelta);
-    this.updateSpeedLines(boosting, scrollSpeed);
+    this.updateSpeedLines(boosting, reducedMotion ? 0 : scrollSpeed);
     this.parallaxBackground();
     if (this.debugEnabled || this.isSceneryTrajectoryDebug()) this.drawRoadsideDebug();
   }

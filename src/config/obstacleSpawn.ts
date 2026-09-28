@@ -8,6 +8,8 @@
  * 4. Aucun anti-streak → longues séries sans obstacle central ;
  * 5. Fallback après rejet poussait souvent vers les côtés.
  * 6. Marge de réaction fixe supérieure au trajet aux vitesses normale/difficile.
+ * Règle actuelle : une moto vivante réserve sa voie entière ; cette sécurité
+ * reste prioritaire sur l’alternance centre/gauche/droite.
  */
 
 import { CONFIG, LANES, getTier, getSpawnReactionTime } from './gameConfig';
@@ -69,7 +71,7 @@ export function isObstacleSpawnDebugEnabled(
   return params.get('obstacleSpawnDebug') === '1' || params.get('ICC_DEBUG_OBSTACLE_SPAWN') === '1';
 }
 
-/** Occupancy spatiale : même lane OK si |Δz| ≥ minGap */
+/** Même voie autorisée avec assez de distance, sauf réservation par une moto. */
 export function isLaneSafeAtDepth(
   lane: number,
   spawnZ: number,
@@ -89,6 +91,7 @@ export function isLaneSafeAtDepth(
   for (const o of existing) {
     if (o.role !== 'danger') continue;
     if (Math.round(o.lane) !== lane) continue;
+    if (o.reservesLane) return { ok: false, reason: 'lane_reserved_by_motorcycle' };
     if (o.fromBehind && o.z > 40) continue;
     // Hold / proche joueur : lane indisponible pour un nouvel obstacle
     if (o.z <= holdZ * 0.35) {

@@ -9,6 +9,8 @@ export interface RoadOccupant {
   /** danger / collectible / other */
   role: 'danger' | 'collect' | 'neutral';
   fromBehind?: boolean;
+  /** A live motorcycle reserves its entire lane until defeated/despawned. */
+  reservesLane?: boolean;
 }
 
 export interface PathCheckInput {
@@ -69,7 +71,7 @@ export function hasReachableEscape(input: PathCheckInput): boolean {
 
   for (const o of existing) {
     if (o.role !== 'danger') continue;
-    if (Math.abs(o.z - bandZ) > safetyBand) continue;
+    if (!o.reservesLane && Math.abs(o.z - bandZ) > safetyBand) continue;
     if (o.fromBehind && o.z > 40) continue;
     blocked.add(o.lane);
   }
@@ -117,6 +119,11 @@ export function pickMotoSpawnLanes(
   clearanceZ = CONFIG.spawn.motoClearanceZ,
 ): number[] {
   const occupied = new Set(nearDangerLanes(existing, closedLane, clearanceZ));
+  // Never introduce a motorcycle into a lane with an existing ground danger,
+  // including a distant obstacle or an overtaking car.
+  for (const occupant of existing) {
+    if (occupant.role === 'danger') occupied.add(Math.round(occupant.lane));
+  }
   const candidates = [0, 1, 2].filter((l) => !occupied.has(l));
   // Réserver au moins une échappatoire parmi les voies encore libres
   const maxPlace = Math.max(0, candidates.length - 1);

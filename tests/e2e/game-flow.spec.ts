@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { LaneEntity } from '../../src/systems/EntityTypes';
+import type { EntityManager } from '../../src/systems/EntityManager';
 
 const errors = new WeakMap<Page, string[]>();
 test.beforeEach(async ({ page }) => {
@@ -17,6 +19,15 @@ async function menu(page: Page): Promise<void> {
 async function play(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'JOUER', exact: true }).click();
   await active(page, 'Game');
+}
+async function waitForPlaying(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => {
+    const game = window.__khayilGame?.scene.getScene('Game') as {
+      playing?: boolean; paused?: boolean; countdownActive?: boolean;
+    };
+    return { playing: game?.playing, paused: game?.paused, countdown: game?.countdownActive, hidden: document.hidden };
+  }), { message: 'Le décompte doit se terminer dans une page visible, sans pause.' })
+    .toEqual({ playing: true, paused: false, countdown: false, hidden: false });
 }
 async function finish(page: Page, won: boolean): Promise<void> {
   await page.evaluate(won => {
@@ -116,13 +127,42 @@ test('quitter un chargement annule sa transition sans remplacer les textures act
   await active(page, 'Prepare');
   await page.getByRole('button', { name: 'Accueil', exact: true }).click();
   await active(page, 'Menu');
+  const downloaded = page.waitForResponse(response => response.url().endsWith('/assets/car.webp'));
   release();
-  await page.waitForTimeout(500);
+  await (await downloaded).finished();
   await active(page, 'Menu');
   await play(page);
 });
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }, { width: 844, height: 480 }, { width: 568, height: 320 }]) {
+  test(`menu complet sans débordement ${viewport.width}×${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.addInitScript(() => localStorage.setItem('khayil2026_best', '2821'));
+    await menu(page);
+    await expect(page.locator('.menu-record')).toContainText('2821 m');
+    await expect(page.locator('.hero-moto')).toBeVisible();
+    for (const difficulty of ['Facile', 'Normal', 'Difficile']) {
+      const choice = page.getByRole('button', { name: difficulty, exact: true });
+      await choice.click();
+      await expect(choice).toHaveAttribute('aria-pressed', 'true');
+    }
+    const sound = page.getByRole('button', { name: 'Son :' });
+    await sound.click();
+    await expect(sound).toHaveText('Son : coupé');
+    await page.reload();
+    await active(page, 'Menu');
+    await expect(page.getByRole('button', { name: 'Son : coupé' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('button', { name: 'Difficile', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    const geometry = await page.locator('.menu-screen').evaluate(root => ({ width: root.clientWidth, scrollWidth: root.scrollWidth, height: root.clientHeight, scrollHeight: root.scrollHeight }));
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
+    expect(geometry.scrollHeight).toBeLessThanOrEqual(geometry.height + 1);
+    for (const control of await page.locator('.menu-screen button').all()) {
+      await expect(control).toBeInViewport({ ratio: 1 });
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    await page.setViewportSize({ width: viewport.height, height: viewport.width });
+    await assertActions(page);
+  });
   for (const won of [false, true]) {
     test(`fin ${won ? 'victoire' : 'défaite'} responsive ${viewport.width}×${viewport.height}`, async ({ page }) => {
       await page.setViewportSize(viewport);
@@ -177,7 +217,7 @@ test('clavier, effets réduits et classements par difficulté', async ({ page, b
 
 test('les flèches changent la voie après le décompte', async ({ page }) => {
   await menu(page); await play(page);
-  await expect.poll(() => page.evaluate(() => (window.__khayilGame?.scene.getScene('Game') as { playing?: boolean }).playing)).toBe(true);
+  await waitForPlaying(page);
   await page.keyboard.press('ArrowRight');
   await expect.poll(() => page.evaluate(() => (window.__khayilGame?.scene.getScene('Game') as { lane?: number }).lane)).toBe(2);
 });
@@ -189,6 +229,55 @@ test('la partie se met en pause en arrière-plan', async ({ page }) => {
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect.poll(() => page.evaluate(() => (window.__khayilGame?.scene.getScene('Game') as { paused?: boolean }).paused)).toBe(true);
+});
+
+test('une moto réserve sa voie aux obstacles, dépassements et barrières', async ({ page }) => {
+  await menu(page); await play(page);
+  const result = await page.evaluate(() => {
+    const game = window.__khayilGame!.scene.getScene('Game') as unknown as {
+      entityManager: EntityManager<LaneEntity>;
+      spawnMotoFoes(kind: string, label: string, color: string): void;
+      spawnObstacle(lane: number, z: number): void;
+      spawnFromBehind(): void;
+      spawnReject(): void;
+      closedLane: number | null;
+    };
+    game.entityManager.clear();
+    game.spawnMotoFoes('peur', 'PEUR', '#ffeb3b');
+    const lanes = game.entityManager.items.filter(e => e.kind === 'peur').map(e => e.lane);
+    for (const lane of lanes) game.spawnObstacle(lane, 410);
+    game.spawnFromBehind();
+    game.spawnReject();
+    const blocked = game.entityManager.items.some(e => e.kind === 'obstacle' && lanes.includes(e.lane));
+    const closed = game.closedLane;
+    game.entityManager.clear();
+    for (const lane of lanes) game.spawnObstacle(lane, 410);
+    return { lanes, blocked, closed, released: game.entityManager.items.map(e => e.lane) };
+  });
+  expect(result.lanes.length).toBeGreaterThan(0);
+  expect(result.blocked).toBe(false);
+  expect(result.lanes).not.toContain(result.closed);
+  expect(result.released).toEqual(result.lanes);
+});
+
+test('les jets du boost suivent son activation et son expiration', async ({ page }) => {
+  await menu(page); await play(page);
+  const states = await page.evaluate(() => {
+    const game = window.__khayilGame!.scene.getScene('Game') as unknown as {
+      addEffect(id: string, duration: number): void;
+      tickEffects(dt: number): void;
+      boostVisuals: { graphics: { visible: boolean; parentContainer: unknown } };
+      player: unknown;
+    };
+    const before = game.boostVisuals.graphics.visible;
+    game.addEffect('boost', 4);
+    game.tickEffects(.016);
+    const during = game.boostVisuals.graphics.visible;
+    const follows = game.boostVisuals.graphics.parentContainer === game.player;
+    game.tickEffects(4);
+    return { before, during, follows, after: game.boostVisuals.graphics.visible };
+  });
+  expect(states).toEqual({ before: false, during: true, follows: true, after: false });
 });
 
 test('le viewport de gameplay reste plafonné sur desktop', async ({ page }) => {
@@ -203,6 +292,8 @@ for (const difficulty of ['Facile', 'Normal', 'Difficile']) {
     await menu(page);
     await page.getByRole('button', { name: difficulty, exact: true }).click();
     await play(page);
+    // The spawn window starts after the countdown, not when the scene is created.
+    await waitForPlaying(page);
     await expect.poll(() => page.evaluate(() => {
       const game = window.__khayilGame?.scene.getScene('Game') as unknown as {
         obstacleDistributor: { recentObstacleLanes: number[] };
@@ -217,7 +308,7 @@ test('un geste tactile change de voie', async ({ page, browserName }) => {
   await menu(page);
   await page.getByRole('button', { name: 'JOUER', exact: true }).tap();
   await active(page, 'Game');
-  await expect.poll(() => page.evaluate(() => (window.__khayilGame?.scene.getScene('Game') as { playing?: boolean }).playing)).toBe(true);
+  await waitForPlaying(page);
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 195, y: 620 }] });
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 90, y: 620 }] });

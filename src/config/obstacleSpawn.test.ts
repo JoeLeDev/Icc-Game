@@ -12,10 +12,26 @@ import { Rng } from '../utils/Rng';
 import { CONFIG, getScrollSpeed, getSpawnReactionTime } from './gameConfig';
 import { horizonSpawnZ } from './laneOccupancy';
 import { DIFFICULTY_IDS } from './difficulty';
-import { canReachLane, timeToReact } from '../systems/SpawnFairness';
+import { canReachLane, pickMotoSpawnLanes, timeToReact } from '../systems/SpawnFairness';
 import type { RoadOccupant } from '../systems/SpawnFairness';
 
 describe('obstacleSpawn — distribution contrôlée', () => {
+  it.each([0, 180, 410])('réserve toute la voie d’une moto à z=%s puis la libère', z => {
+    const existing: RoadOccupant[] = [{ lane: 1, z, role: 'danger', reservesLane: true }];
+    expect(isLaneSafeAtDepth(1, 410, existing, { minGap: 100, closedLane: null }).ok).toBe(false);
+    const input = { tier: 0, playerLane: 1, closedLane: null, existing, spawnZ: 410, scrollSpeed: 220, rng: new Rng(7), distributor: new ObstacleLaneDistributor() };
+    expect(chooseObstacleLanesControlled(input)?.lanes).not.toContain(1);
+    existing.length = 0;
+    expect(chooseObstacleLanesControlled(input)?.lanes).toContain(1);
+  });
+
+  it.each([-35, 180, 410])('ne place pas de moto sur un danger existant à z=%s', z => {
+    const existing: RoadOccupant[] = [{ lane: 0, z, role: 'danger', fromBehind: z < 0 }];
+    const lanes = pickMotoSpawnLanes(1, null, existing, 2, new Rng(42));
+    expect(lanes).not.toContain(0);
+    expect(lanes).toHaveLength(1);
+  });
+
   it.each(DIFFICULTY_IDS)('alterne les trois voies dès le départ en difficulté %s', difficulty => {
     const distributor = new ObstacleLaneDistributor();
     const scrollSpeed = getScrollSpeed(0, false, false, difficulty);
