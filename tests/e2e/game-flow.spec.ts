@@ -260,6 +260,32 @@ test('une moto réserve sa voie aux obstacles, dépassements et barrières', asy
   expect(result.released).toEqual(result.lanes);
 });
 
+test('le bouclier reste visible puis disparaît au choc absorbé', async ({ page }) => {
+  await menu(page); await play(page);
+  const result = await page.evaluate(() => {
+    const game = window.__khayilGame!.scene.getScene('Game') as unknown as {
+      collectBonus(id: string, x: number, y: number): void;
+      tickInvincibility(): void;
+      invincibleRemaining: number; lives: number; hasTempShield: boolean;
+      shieldVisuals: { graphics: { visible: boolean; parentContainer: unknown } };
+      entityRuntime: { takeHit(x: number, y: number): void };
+      player: { x: number; y: number };
+    };
+    const before = game.shieldVisuals.graphics.visible;
+    const lives = game.lives;
+    game.collectBonus('shield', game.player.x, game.player.y);
+    game.tickInvincibility();
+    const during = game.shieldVisuals.graphics.visible;
+    const follows = game.shieldVisuals.graphics.parentContainer === game.player;
+    game.invincibleRemaining = 0;
+    game.entityRuntime.takeHit(game.player.x, game.player.y);
+    game.tickInvincibility();
+    return { before, during, follows, after: game.shieldVisuals.graphics.visible,
+      consumed: !game.hasTempShield, protected: game.lives === lives };
+  });
+  expect(result).toEqual({ before: false, during: true, follows: true, after: false, consumed: true, protected: true });
+});
+
 test('les jets du boost suivent son activation et son expiration', async ({ page }) => {
   await menu(page); await play(page);
   const states = await page.evaluate(() => {

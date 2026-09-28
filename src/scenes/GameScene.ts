@@ -54,6 +54,7 @@ import {
 } from '../systems/SpriteDisplay';
 import { WorldView } from '../systems/WorldView';
 import { BoostVisuals } from '../systems/BoostVisuals';
+import { ShieldVisuals } from '../systems/ShieldVisuals';
 import { GameFeedback } from '../systems/GameFeedback';
 import { PlayerController } from '../systems/PlayerController';
 import { SpawnDirector } from '../systems/SpawnDirector';
@@ -78,6 +79,7 @@ export class GameScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Container;
   private playerSprite!: Phaser.GameObjects.Image;
   private boostVisuals!: BoostVisuals;
+  private shieldVisuals!: ShieldVisuals;
   private loveAura!: Phaser.GameObjects.Arc;
   private playerShadow!: Phaser.GameObjects.Ellipse;
   private trail!: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -419,6 +421,7 @@ export class GameScene extends Phaser.Scene {
     const pw = this.layout.playerDisplayWidth;
     this.playerShadow = this.add.ellipse(0, 40, pw * 0.85, 12, 0x000000, 0.45);
     this.boostVisuals = new BoostVisuals(this);
+    this.shieldVisuals = new ShieldVisuals(this);
     this.loveAura = this.add
       .circle(0, 0, pw * 0.85, 0xff80ab, 0)
       .setStrokeStyle(3, 0xff2d95, 0);
@@ -435,6 +438,7 @@ export class GameScene extends Phaser.Scene {
       this.loveAura,
       this.inviRing,
       this.playerSprite,
+      this.shieldVisuals.graphics,
     ]);
     this.player.setDepth(DEPTH.player);
     this.player.setSize(this.playerHitbox.w, this.playerHitbox.h);
@@ -1604,6 +1608,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tickInvincibility(): void {
+    this.shieldVisuals.update(this.hasTempShield, this.reducedMotion, this.simTime,
+      this.playerSprite.displayWidth, this.playerSprite.displayHeight);
     if (this.invincibleRemaining > 0) {
       const pulse = 0.4 + Math.sin(this.simTime * 18) * 0.35;
       this.playerSprite.setAlpha(this.reducedMotion ? 0.8 : pulse);
