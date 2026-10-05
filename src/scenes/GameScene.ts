@@ -1758,6 +1758,7 @@ export class GameScene extends Phaser.Scene {
     this.runScore = scored.total;
 
     Storage.addScore({
+      name: Storage.getPlayerName(),
       difficulty: this.difficulty.id,
       distance: Math.floor(this.distance),
       equipment: this.collected.size,

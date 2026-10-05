@@ -8,6 +8,8 @@ import {
 } from '../config/difficulty';
 
 export interface LocalScore {
+  /** Pseudo du joueur (classement local) */
+  name: string;
   distance: number;
   equipment: number;
   love: boolean;
@@ -16,6 +18,9 @@ export interface LocalScore {
   grade?: FinalGrade;
   difficulty?: DifficultyId;
 }
+
+export const DEFAULT_PLAYER_NAME = 'Joueuse';
+export const PLAYER_NAME_MAX_LEN = 16;
 
 const memory = new Map<string, string>();
 
@@ -36,6 +41,15 @@ function set(key: string, value: string): void {
   }
 }
 
+/** Nettoie et borne un pseudo (espaces, longueur). */
+export function normalizePlayerName(raw: string | null | undefined): string {
+  const cleaned = (raw ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, PLAYER_NAME_MAX_LEN);
+  return cleaned || DEFAULT_PLAYER_NAME;
+}
+
 function isLocalScore(value: unknown): value is LocalScore {
   if (!value || typeof value !== 'object') return false;
   const score = value as Partial<LocalScore>;
@@ -44,17 +58,30 @@ function isLocalScore(value: unknown): value is LocalScore {
     Number.isFinite(score.equipment) &&
     typeof score.love === 'boolean' &&
     typeof score.date === 'string' &&
-    (score.score === undefined || Number.isFinite(score.score))
+    (score.score === undefined || Number.isFinite(score.score)) &&
+    (score.name === undefined || typeof score.name === 'string')
   );
+}
+
+/** Garantit un `name` même pour les anciennes entrées sans pseudo. */
+function withPlayerName(entry: LocalScore): LocalScore {
+  return {
+    ...entry,
+    name: normalizePlayerName(entry.name),
+  };
 }
 
 export const Storage = {
   getReducedMotion(): boolean {
     const stored = get('khayil-reduced-motion');
-    return stored === null ? (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) : stored === '1';
+    return stored === null
+      ? typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+      : stored === '1';
   },
 
-  setReducedMotion(reduced: boolean): void { set('khayil-reduced-motion', reduced ? '1' : '0'); },
+  setReducedMotion(reduced: boolean): void {
+    set('khayil-reduced-motion', reduced ? '1' : '0');
+  },
 
   getSoundEnabled(): boolean {
     const v = get(CONFIG.storage.soundKey);
@@ -63,6 +90,16 @@ export const Storage = {
 
   setSoundEnabled(on: boolean): void {
     set(CONFIG.storage.soundKey, on ? '1' : '0');
+  },
+
+  getPlayerName(): string {
+    return normalizePlayerName(get(CONFIG.storage.playerNameKey));
+  },
+
+  setPlayerName(name: string): string {
+    const normalized = normalizePlayerName(name);
+    set(CONFIG.storage.playerNameKey, normalized);
+    return normalized;
   },
 
   getDifficulty(): DifficultyId {
@@ -87,8 +124,11 @@ export const Storage = {
   getLeaderboard(difficulty?: DifficultyId | 'legacy'): LocalScore[] {
     try {
       const parsed: unknown = JSON.parse(get(CONFIG.storage.leaderboardKey) || '[]');
-      const scores = Array.isArray(parsed) ? parsed.filter(isLocalScore) : [];
-      return scores.filter((entry) => !difficulty || (difficulty === 'legacy' ? !isDifficultyId(entry.difficulty) : entry.difficulty === difficulty));
+      const scores = Array.isArray(parsed) ? parsed.filter(isLocalScore).map(withPlayerName) : [];
+      return scores.filter((entry) =>
+        !difficulty ||
+        (difficulty === 'legacy' ? !isDifficultyId(entry.difficulty) : entry.difficulty === difficulty),
+      );
     } catch {
       return [];
     }
@@ -96,7 +136,12 @@ export const Storage = {
 
   addScore(entry: LocalScore): void {
     const board = this.getLeaderboard();
-    board.push(entry);
+    board.push(
+      withPlayerName({
+        ...entry,
+        name: entry.name ?? this.getPlayerName(),
+      }),
+    );
     board.sort(
       (a, b) =>
         (b.score ?? b.distance) - (a.score ?? a.distance) ||

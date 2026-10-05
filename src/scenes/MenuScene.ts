@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { DIFFICULTY_IDS, DIFFICULTY_PRESETS, type DifficultyId } from '../config/difficulty';
+import { gradeForScore } from '../config/scoring';
 import { tryLoadDeferredDecor } from '../systems/AssetFactory';
 import { audio } from '../utils/AudioManager';
 import { Storage } from '../utils/Storage';
@@ -45,6 +46,24 @@ export class MenuScene extends Phaser.Scene {
     value.append(element('p', 'RECORD LOCAL'), element('strong', `${best} m`));
     record.append(trophy, value);
     stage.append(record);
+    const nameField = element('label', '', 'menu-player-name');
+    nameField.append(element('span', 'Ton pseudo'));
+    const nameInput = element('input');
+    nameInput.type = 'text';
+    nameInput.maxLength = 16;
+    nameInput.setAttribute('autocomplete', 'nickname');
+    nameInput.placeholder = 'Joueuse';
+    nameInput.value = Storage.getPlayerName() === 'Joueuse' ? '' : Storage.getPlayerName();
+    nameInput.setAttribute('aria-label', 'Pseudo pour le classement local');
+    nameInput.addEventListener('change', () => {
+      Storage.setPlayerName(nameInput.value);
+    });
+    nameInput.addEventListener('blur', () => {
+      const saved = Storage.setPlayerName(nameInput.value);
+      if (nameInput.value.trim()) nameInput.value = saved;
+    });
+    nameField.append(nameInput);
+    ui.content.append(nameField);
     const choices = element('fieldset');
     choices.append(element('legend', 'Difficulté'));
     const row = element('div', '', 'choice-row');
@@ -61,6 +80,7 @@ export class MenuScene extends Phaser.Scene {
     ui.actions.append(choices);
     const play = button(ui.actions, 'JOUER', () => {
       if (this.starting) return;
+      Storage.setPlayerName(nameInput.value);
       this.starting = true;
       audio.ui();
       this.scene.start('Prepare');
@@ -88,12 +108,33 @@ export class MenuScene extends Phaser.Scene {
   private showLeaderboard(root: HTMLElement): void {
     const dialog = element('dialog', '', 'leaderboard');
     dialog.setAttribute('aria-label', 'Classement local');
-    dialog.append(element('h2', 'Classement local'), element('p', 'Enregistré uniquement sur cet appareil.'));
+    dialog.append(
+      element('h2', 'Classement des joueuses'),
+      element('p', 'Top 10 par difficulté, enregistré uniquement sur cet appareil.'),
+    );
+    const guide = element('section', '', 'leaderboard-guide');
+    guide.setAttribute('aria-label', 'Comment lire le classement');
+    guide.append(
+      element('h3', 'Comment lire le classement'),
+      element('p', 'Les joueuses sont classées selon le total de points obtenu pendant leur partie.'),
+    );
+    const guideList = element('dl', '', 'leaderboard-guide-list');
+    const explanations: [string, string][] = [
+      ['Points', 'Score total de la partie : distance, doutes dissipés, esquives, équipements et bonus.'],
+      ['Distance', 'Nombre de mètres parcourus avant la fin de la partie.'],
+      ['Équipement récupéré', 'Éléments uniques récupérés sur les 7 nécessaires pour la conquête finale.'],
+      ['Note finale', 'Lettre attribuée au score total : elle résume la performance de la partie.'],
+    ];
+    explanations.forEach(([term, description]) => {
+      guideList.append(element('dt', term), element('dd', description));
+    });
+    guide.append(guideList);
+    dialog.append(guide);
     const label = element('label', 'Difficulté ');
     const filter = element('select');
     filter.setAttribute('aria-label', 'Difficulté du classement');
     for (const [value, title] of [
-      ...DIFFICULTY_IDS.map(id => [id, DIFFICULTY_PRESETS[id].label]),
+      ...DIFFICULTY_IDS.map((id) => [id, DIFFICULTY_PRESETS[id].label]),
       ['legacy', 'Anciennes parties — difficulté inconnue'],
     ]) {
       const option = element('option', title);
@@ -104,12 +145,37 @@ export class MenuScene extends Phaser.Scene {
     label.append(filter);
     dialog.append(label);
     const list = element('ol');
+    list.setAttribute('aria-label', 'Classement');
     const render = (): void => {
       list.replaceChildren();
       const entries = Storage.getLeaderboard(filter.value as DifficultyId | 'legacy');
-      if (!entries.length) list.append(element('li', 'Aucune partie enregistrée'));
-      entries.forEach(entry => list.append(element('li',
-        `${entry.score ?? entry.distance} pts · ${entry.distance} m · ${entry.equipment}/7${entry.love ? ' ❤' : ''}`)));
+      if (!entries.length) {
+        list.append(element('li', 'Aucune partie enregistrée — joue pour apparaître ici !'));
+        return;
+      }
+      entries.forEach((entry, i) => {
+        const row = element('li', '', 'leaderboard-row');
+        const rank = element('span', `${i + 1}.`, 'leaderboard-rank');
+        const who = element('strong', entry.name || 'Joueuse', 'leaderboard-name');
+        const total = entry.score ?? entry.distance;
+        const grade = entry.grade ?? gradeForScore(total).grade;
+        const gradeLabel = gradeForScore(total).label;
+        const stats = element('dl', '', 'leaderboard-stats');
+        const metrics: [string, string][] = [
+          ['Points', `${total} pts`],
+          ['Distance', `${entry.distance} m`],
+          ['Équipement récupéré', `${entry.equipment}/7`],
+          ['Note finale', `${grade} — ${gradeLabel}`],
+        ];
+        metrics.forEach(([label, value]) => {
+          const metric = element('div', '', 'leaderboard-metric');
+          metric.append(element('dt', label), element('dd', value));
+          stats.append(metric);
+        });
+        if (entry.love) stats.append(element('p', 'Bonus Amour récupéré ❤', 'leaderboard-bonus'));
+        row.append(rank, who, stats);
+        list.append(row);
+      });
     };
     filter.addEventListener('change', render);
     render();

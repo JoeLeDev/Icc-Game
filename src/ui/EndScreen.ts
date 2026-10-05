@@ -32,7 +32,7 @@ export function endScreen(scene: Phaser.Scene, data: EndData, won: boolean): voi
   summary.setAttribute('aria-label', 'Résultat');
   summary.append(
     element('h2', `Note ${data.grade ?? '—'} · ${data.gradeLabel ?? ''}`),
-    element('p', `${data.score ?? 0} points`, 'score'),
+    element('p', `${Storage.getPlayerName()} — ${data.score ?? 0} points`, 'score'),
     element('p', `${data.distance} m · ${data.equipment}/7 équipements · ${data.avoided ?? 0} esquives`),
     element('p', `Record local : ${Storage.getBestDistance()} m`),
   );

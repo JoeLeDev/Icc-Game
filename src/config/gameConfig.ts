@@ -148,6 +148,7 @@ export const CONFIG = {
     soundKey: 'khayil2026_sound',
     leaderboardKey: 'khayil2026_local_board',
     difficultyKey: 'khayil2026_difficulty',
+    playerNameKey: 'khayil2026_player_name',
   },
 };
 
