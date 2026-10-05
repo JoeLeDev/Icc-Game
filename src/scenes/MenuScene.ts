@@ -6,6 +6,21 @@ import { Storage } from '../utils/Storage';
 import { button, element, picture, screen } from '../ui/Screen';
 import '../ui/menu.css';
 
+/** Decorative inline icons: accessible button names remain their existing text. */
+function actionIcon(target: HTMLButtonElement, kind: 'book' | 'trophy'): void {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  svg.classList.add('menu-action-icon');
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', kind === 'book'
+    ? 'M12 5v15M12 5C9 3 5 3 2 4v14c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z'
+    : 'M7 3h10v6a5 5 0 0 1-10 0V3ZM7 5H3v3a4 4 0 0 0 4 4m10-7h4v3a4 4 0 0 1-4 4m-5 2v6m-4 1h8');
+  svg.append(path);
+  target.prepend(svg);
+}
+
 export class MenuScene extends Phaser.Scene {
   private starting = false;
   constructor() { super('Menu'); }
@@ -51,8 +66,8 @@ export class MenuScene extends Phaser.Scene {
       this.scene.start('Prepare');
     });
     play.setAttribute('aria-label', 'JOUER');
-    button(ui.actions, 'Comment jouer', () => { audio.ui(); this.scene.start('Tutorial'); }, true);
-    button(ui.actions, 'Classement local', () => this.showLeaderboard(ui.root), true);
+    actionIcon(button(ui.actions, 'Comment jouer', () => { audio.ui(); this.scene.start('Tutorial'); }, true), 'book');
+    actionIcon(button(ui.actions, 'Classement local', () => this.showLeaderboard(ui.root), true), 'trophy');
     const settings = element('div', '', 'choice-row menu-settings');
     const sound = button(settings, audio.isEnabled() ? 'Son : activé' : 'Son : coupé', () => {
       const on = audio.toggle();

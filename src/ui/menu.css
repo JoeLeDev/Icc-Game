@@ -1,30 +1,44 @@
 /* Isolated from tutorial, preparation and end-screen layout. No extra image download. */
 .menu-screen {
+  --rider-x: 50%;
+  --menu-radius: 9px;
+  --menu-border: #8045b8;
   isolation: isolate;
-  background: radial-gradient(ellipse at 20% 55%, #61145180, transparent 55%),
-    radial-gradient(ellipse at 85% 40%, #221863, transparent 65%), #080511;
+  background: radial-gradient(ellipse at 34% 28%, #74225b38, transparent 42%),
+    radial-gradient(ellipse at 28% 68%, #79135050, transparent 45%),
+    radial-gradient(ellipse at 85% 20%, #25205a80, transparent 65%),
+    linear-gradient(180deg, #090715, #130b26 58%, #080511);
 }
 .menu-backdrop { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: -1; }
 .menu-backdrop::before {
   content: ''; position: absolute; inset: 28% 0 40%; opacity: .65;
-  background: linear-gradient(180deg, #140b26, #070512);
+  mask-image: linear-gradient(180deg, #000 55%, transparent);
+  background: repeating-linear-gradient(90deg, transparent 0 37px, #b971be12 38px 40px, transparent 41px 70px),
+    linear-gradient(180deg, #140b26, #070512);
   clip-path: polygon(0 40%, 4% 40%, 4% 18%, 8% 18%, 8% 55%, 14% 55%, 14% 35%, 18% 35%, 18% 62%, 24% 62%, 24% 48%, 31% 48%, 31% 68%, 40% 68%, 40% 55%, 48% 55%, 48% 75%, 60% 75%, 60% 48%, 65% 48%, 65% 22%, 69% 22%, 69% 52%, 76% 52%, 76% 36%, 82% 36%, 82% 5%, 87% 5%, 87% 32%, 91% 32%, 91% 45%, 96% 45%, 96% 18%, 100% 18%, 100% 100%, 0 100%);
 }
+.menu-backdrop::after {
+  content: ''; position: absolute; inset: 20% -4% 47%; opacity: .22;
+  mask-image: linear-gradient(180deg, #000 50%, transparent);
+  background: linear-gradient(180deg, #856295, #24143c);
+  clip-path: polygon(0 75%, 7% 75%, 7% 48%, 12% 48%, 12% 63%, 20% 63%, 20% 27%, 24% 27%, 24% 57%, 34% 57%, 34% 72%, 45% 72%, 45% 35%, 49% 35%, 49% 64%, 59% 64%, 59% 20%, 64% 20%, 64% 52%, 74% 52%, 74% 68%, 84% 68%, 84% 34%, 90% 34%, 90% 70%, 100% 70%, 100% 100%, 0 100%);
+}
 .menu-horizon {
-  position: absolute; inset: 46% -5% 0;
-  background: linear-gradient(180deg, #ed299348, transparent 35%);
-  border-top: 1px solid #ff54c478;
-  transform: rotate(-5deg);
+  position: absolute; inset: 36% -5% 0;
+  background: radial-gradient(ellipse at 32% 30%, #d4449530, transparent 55%),
+    linear-gradient(180deg, transparent, #6d35791c 30%, #090611 80%);
 }
 .menu-road {
-  position: absolute; width: 130%; height: 65%; bottom: -25%; left: -15%;
-  transform: perspective(360px) rotateX(56deg) rotateZ(-12deg);
-  background: repeating-linear-gradient(90deg, transparent 0 23%, #f238ba80 24%, transparent 24.4% 48%, #32e5ff90 49%, transparent 49.4% 74%);
-  border-inline: 5px solid #f54fd9;
-  box-shadow: 0 0 45px #e829ae70, inset 0 0 75px #78147460;
+  position: absolute; inset: 53% -20% -25%;
+  transform: perspective(420px) rotateX(48deg);
+  transform-origin: 38% 0;
+  background: linear-gradient(90deg, transparent 17%, #e347a975 17.2%, transparent 17.5% 44%, #6cdce52d 44.2%, transparent 44.4% 78%, #e347a975 78.2%, transparent 78.5%),
+    radial-gradient(ellipse at 38% 80%, #69234016, transparent 58%),
+    linear-gradient(180deg, #39133600, #110919bd 45%, #0d0818);
+  mask-image: linear-gradient(180deg, transparent, #000 28%);
 }
 .menu-screen .screen-panel {
-  position: relative; width: min(100%, 1100px); display: grid;
+  position: relative; width: min(100%, 1280px); display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(280px, .85fr);
   align-content: center; align-items: center; gap: clamp(20px, 5vw, 76px);
 }
@@ -32,40 +46,79 @@
 .menu-screen h1 {
   padding: 14px 18px; border: 2px solid #29e6ff; white-space: nowrap;
   font-size: clamp(22px, 3.2vw, 44px); color: #ff43bc;
-  text-shadow: 0 0 24px #f92e9860; box-shadow: 0 0 14px #00e5ff40, inset 0 0 16px #00e5ff15;
+  text-shadow: 0 0 24px #f92e9860; box-shadow: 0 0 16px #00e5ff30, 0 0 90px #ea258d18, inset 0 0 16px #00e5ff15;
   background: #100719a0;
 }
 .menu-screen .tagline { font-size: clamp(10px, 1.2vw, 14px); letter-spacing: .22em; }
-.menu-stage { position: relative; width: 100%; height: clamp(230px, 46dvh, 430px); }
+.menu-stage { position: relative; isolation: isolate; width: 100%; height: clamp(230px, 56dvh, 600px); }
+.menu-stage::before {
+  content: ''; position: absolute; z-index: -1; width: 68%; height: 90%;
+  left: var(--rider-x); top: 8%; transform: translateX(-50%);
+  background: radial-gradient(ellipse, #e539a725, #6523bc16 45%, transparent 70%);
+  animation: menu-halo 8s ease-in-out infinite;
+}
+.menu-stage::after {
+  content: ''; position: absolute; z-index: -1; left: var(--rider-x); bottom: -3%;
+  width: 48%; height: 13%; transform: translateX(-50%);
+  background: radial-gradient(ellipse, #030108c9 10%, #ab2a7a35 43%, transparent 70%);
+  border-bottom: 1px solid #e849b826; border-radius: 50%;
+}
 .menu-screen .hero-moto {
   display: block; width: 72%; height: 100%; object-fit: contain;
   margin-inline: auto; filter: drop-shadow(-15px 10px 28px #ff2d9560) drop-shadow(12px 0 12px #00e5ff30);
+  animation: menu-idle 7s ease-in-out infinite;
 }
 .menu-record {
   position: absolute; right: 0; bottom: 12%; display: flex; align-items: center; gap: 14px;
   padding: 12px 18px; border: 1px solid #a84dd680; border-radius: 12px;
-  background: #10091ce8; text-align: left; color: #f1adff;
+  background: linear-gradient(135deg, #21102ad9, #10091cbd); text-align: left; color: #f1adff;
+  box-shadow: 0 0 22px #c52fa410, inset 0 1px #ebbcff12;
 }
+.menu-record::before { content: ''; position: absolute; right: 100%; top: 50%; width: 28px; height: 1px; background: linear-gradient(90deg, transparent, #b257d480); }
 .menu-record p { font-size: 10px; letter-spacing: .1em; }
 .menu-record strong { font-size: 26px; font-weight: 600; }
 .menu-record-icon { font-size: 30px; }
-.menu-screen .screen-actions { position: static; align-self: center; width: 100%; max-width: 380px; gap: 12px; }
+.menu-screen .screen-actions { position: static; align-self: center; width: 100%; max-width: 420px; gap: 14px; }
 .menu-screen fieldset { width: 100%; margin-bottom: 10px; }
 .menu-screen legend { text-transform: uppercase; font-size: 12px; letter-spacing: .1em; }
-.menu-screen button { min-height: 52px; border-radius: 9px; transition: border-color .15s, box-shadow .15s; }
-.menu-screen button.secondary { background: #140c26de; border-color: #8045b8; }
+.menu-screen button { min-height: 52px; border-radius: var(--menu-radius); transition: border-color .15s, box-shadow .15s, transform .15s; }
+.menu-screen button.secondary { background: #140c26de; border-color: var(--menu-border); }
 .menu-screen button[aria-pressed='true'] { background: #7323b8; border-color: #ffd984; box-shadow: 0 0 14px #b72ffb40; }
 .menu-screen .screen-actions > button:first-of-type {
   min-height: 64px; font-size: 26px; letter-spacing: .05em;
-  background: linear-gradient(115deg, #8b22bf, #a51bd5 60%, #7511bb);
+  background: linear-gradient(115deg, #7626c4, #ad25c6 65%, #c62eaf);
   border: 2px solid #f3a0ff; box-shadow: 0 0 24px #d431db40, inset 0 0 16px #fca7ff30;
+  animation: menu-play-glow 7s ease-in-out infinite;
 }
 .menu-screen .screen-actions > button:first-of-type::before { content: '▶'; margin-right: 16px; font-size: 22px; color: #f2b1ff; }
-.menu-screen .screen-actions > button.secondary { text-transform: uppercase; letter-spacing: .03em; }
+.menu-screen .screen-actions > button.secondary { position: relative; padding-inline: 36px; text-transform: uppercase; letter-spacing: .03em; }
+.menu-action-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; fill: none; stroke: #e4c9ff; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .menu-screen .menu-settings { margin-top: 6px; }
-.menu-screen .menu-settings button { font-size: 12px; padding-inline: 8px; }
+.menu-screen .menu-settings button { min-height: 44px; font-size: 12px; padding-inline: 8px; background: #140c2690; border-color: #71408c; box-shadow: none; }
+.menu-screen .menu-settings button[aria-pressed='true'] { background: #29123c; border-color: #ae79c7; color: #f0d5ff; }
 .menu-screen button:hover { border-color: #f2c1ff; box-shadow: 0 0 16px #c96bff50; }
+.menu-screen fieldset button[aria-pressed='true']:hover { border-color: #ffd984; }
+.menu-screen .screen-actions > button:first-of-type:focus-visible { outline: 3px solid #00e5ff; outline-offset: 4px; }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .menu-screen:not([data-reduced-motion='true']) .screen-actions > button:first-of-type:hover { transform: scale(1.01); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .menu-screen:not([data-reduced-motion='true']) .screen-actions > button:first-of-type:active { transform: scale(.99); }
+}
+/* Leave the validated phone layouts untouched. Keep the HUD inside the hero. */
+@media (min-width: 1000px) and (min-height: 621px) {
+  .menu-record { right: 3%; bottom: 8%; }
+}
+@media (min-width: 1600px) and (min-height: 900px) {
+  .menu-screen .screen-actions { max-width: 450px; gap: 15px; }
+  .menu-screen .screen-actions > button { min-height: 56px; font-size: 15px; }
+  .menu-screen .screen-actions > button:first-of-type { min-height: 68px; font-size: 28px; }
+}
+@keyframes menu-idle { 50% { transform: translateY(-3px); } }
+@keyframes menu-halo { 50% { opacity: .65; } }
+@keyframes menu-play-glow { 50% { box-shadow: 0 0 30px #d431db55, inset 0 0 16px #fca7ff30; } }
 @media (max-width: 599px) and (orientation: portrait) {
+  .menu-screen { --rider-x: 34%; }
   .menu-screen .screen-panel { display: flex; flex-direction: column; gap: 12px; justify-content: center; }
   .menu-screen .screen-content { width: 100%; gap: 10px; }
   .menu-screen h1 { font-size: clamp(22px, 6.5vw, 32px); padding: 10px 14px; }
@@ -91,6 +144,7 @@
   .menu-screen .menu-settings { margin-top: 0; }
 }
 @media (orientation: landscape) and (max-height: 620px) {
+  .menu-screen { --rider-x: 30%; }
   .menu-screen .screen-panel { grid-template-columns: minmax(0, 1fr) minmax(250px, .9fr); }
   .menu-stage { height: clamp(140px, 48dvh, 240px); }
   .menu-record { bottom: 0; padding: 7px 10px; }
@@ -98,5 +152,9 @@
   .menu-screen .hero-moto { margin-left: 0; width: 60%; }
   .menu-record { right: 0; bottom: 5%; }
 }
-@media (prefers-reduced-motion: reduce) { .menu-screen button { transition: none; } }
-.menu-screen[data-reduced-motion='true'] button { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .menu-screen *, .menu-screen *::before, .menu-screen *::after { animation: none !important; transition: none !important; }
+}
+.menu-screen[data-reduced-motion='true'] *,
+.menu-screen[data-reduced-motion='true'] *::before,
+.menu-screen[data-reduced-motion='true'] *::after { animation: none !important; transition: none !important; }

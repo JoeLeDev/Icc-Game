@@ -23,6 +23,7 @@ function harness() {
     feedback: { toast: vi.fn(), burst: vi.fn(), vibrate: vi.fn(), flashScreen: vi.fn() },
     cameras: { main: { shake: vi.fn() } }, refreshHearts: vi.fn(), snapToPreviousLane: vi.fn(), endGame: vi.fn(),
     motoAttacks: { tick: vi.fn() },
+    time: { delayedCall: vi.fn() },
   };
   const runtime = new EntityRuntime(manager, host as unknown as EntityRuntimeHost, {} as Phaser.Scene);
   function entity(overrides: Partial<LaneEntity> = {}) {
@@ -91,12 +92,24 @@ describe('entity lifecycle and resolution', () => {
   it('a winning side hit removes the motorcycle without costing a life', () => {
     const h = harness();
     h.host.getEntityHitRect = () => hitRectForRole(130, 100, 50, 80, 'player');
-    const e = h.entity({ kind: 'depression', hit: false, sideHits: 1 });
+    const e = h.entity({ kind: 'depression', hit: false, sideHits: 1, lane: 2 });
     h.runtime.resolve(e, 0);
     expect(e.sideHits).toBe(2);
     expect(h.manager.count).toBe(0);
     expect(h.host.lives).toBe(3);
     expect(h.host.obstaclesAvoided).toBe(1);
+    // 2ᵉ coup : pas de rebond — le joueur garde / prend la voie de la moto
+    expect(h.host.snapToPreviousLane).not.toHaveBeenCalled();
+  });
+
+  it('a first side hit rebounds to the previous lane', () => {
+    const h = harness();
+    h.host.getEntityHitRect = () => hitRectForRole(130, 100, 50, 80, 'player');
+    const e = h.entity({ kind: 'depression', hit: false, sideHits: 0, lane: 2 });
+    h.runtime.resolve(e, 0);
+    expect(e.sideHits).toBe(1);
+    expect(h.manager.count).toBe(1);
+    expect(h.host.snapToPreviousLane).toHaveBeenCalledWith(2);
   });
   it.each(['depression', 'peur'] as const)('a rear collision with %s only damages the player', (kind) => {
     const h = harness();

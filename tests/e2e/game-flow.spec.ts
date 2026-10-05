@@ -215,6 +215,46 @@ test('clavier, effets réduits et classements par difficulté', async ({ page, b
   await expect(page.getByRole('button', { name: 'Effets réduits' })).toHaveAttribute('aria-pressed', 'true');
 });
 
+for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }]) {
+  test(`menu desktop aligné ${viewport.width}×${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await menu(page);
+    await assertActions(page);
+    for (const name of ['Comment jouer', 'Classement local']) {
+      const action = page.getByRole('button', { name, exact: true });
+      await expect(action.locator('svg')).toHaveAttribute('aria-hidden', 'true');
+      await expect(action).toBeInViewport({ ratio: 1 });
+    }
+    const bounds = await page.locator('.menu-screen').evaluate(root => {
+      const hero = root.querySelector('.menu-stage')!.getBoundingClientRect();
+      const record = root.querySelector('.menu-record')!.getBoundingClientRect();
+      const actions = root.querySelector('.screen-actions')!.getBoundingClientRect();
+      return { heroRight: hero.right, recordRight: record.right, recordLeft: record.left,
+        heroLeft: hero.left, actionsLeft: actions.left, width: root.clientWidth, scrollWidth: root.scrollWidth };
+    });
+    expect(bounds.recordRight).toBeLessThanOrEqual(bounds.heroRight);
+    expect(bounds.recordLeft).toBeGreaterThanOrEqual(bounds.heroLeft);
+    expect(bounds.recordRight).toBeLessThan(bounds.actionsLeft);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.width);
+  });
+}
+
+test('les animations décoratives du menu respectent les effets réduits', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await menu(page);
+  const animations = () => page.locator('.menu-screen').evaluate(root => [
+    getComputedStyle(root.querySelector('.hero-moto')!).animationName,
+    getComputedStyle(root.querySelector('.menu-stage')!, '::before').animationName,
+    getComputedStyle(root.querySelector('.screen-actions > button')!).animationName,
+  ]);
+  expect(await animations()).toEqual(['menu-idle', 'menu-halo', 'menu-play-glow']);
+  await page.getByRole('button', { name: 'Effets réduits' }).click();
+  expect(await animations()).toEqual(['none', 'none', 'none']);
+  await page.getByRole('button', { name: 'Effets réduits' }).click();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await animations()).toEqual(['none', 'none', 'none']);
+});
+
 test('les flèches changent la voie après le décompte', async ({ page }) => {
   await menu(page); await play(page);
   await waitForPlaying(page);

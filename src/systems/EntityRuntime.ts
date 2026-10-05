@@ -224,13 +224,14 @@ export class EntityRuntime {
           );
           e.attackState = reset.state;
         }
-        // Rebond : revenir sur la voie d’avant l’attaque (évite de rester sur la moto)
-        this.host.snapToPreviousLane(Math.round(e.lane));
         if (sideHitDefeats(e.sideHits)) {
+          // 2ᵉ coup : on garde la voie de la moto (pas de rebond)
           e.hit = true;
           this.defeatEnemy(e, index, ram);
           return;
         }
+        // 1ᵉʳ coup : rebond sur la voie précédente
+        this.host.snapToPreviousLane(Math.round(e.lane));
         this.host.feedback.toast(
           `Impact ${e.sideHits}/${MOTO_SIDE_HITS_TO_DEFEAT}`,
           '#ffd54f',
